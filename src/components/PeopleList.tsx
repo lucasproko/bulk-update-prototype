@@ -509,8 +509,7 @@ export const PeopleList = () => {
                       className={`hover:bg-gray-50 ${selectedEmployeeIds.includes(employee.id) ? 'bg-blue-50' : 'bg-white'}`} 
                     >
                       <td 
-                        className="p-4 w-12 sticky left-0 z-20 bg-white" // Use className for base bg
-                        // style={{ backgroundColor: selectedEmployeeIds.includes(employee.id) ? '#EFF6FF' /* bg-blue-50 */ : '#FFFFFF' /* bg-white */ }} // Remove inline style
+                        className="p-4 w-12 sticky left-0 z-20" 
                       >
                         <input
                           type="checkbox"
@@ -520,8 +519,7 @@ export const PeopleList = () => {
                         />
                       </td>
                       <td 
-                        className="p-4 sticky left-12 z-10 min-w-[250px] max-w-[300px] bg-white" // Use className for base bg
-                        // style={{ backgroundColor: selectedEmployeeIds.includes(employee.id) ? '#EFF6FF' /* bg-blue-50 */ : '#FFFFFF' /* bg-white */ }} // Remove inline style
+                        className="p-4 sticky left-12 z-10 min-w-[250px] max-w-[300px]" 
                       >
                         <div className="flex items-center space-x-3">
                           <div className="w-8 h-8 rounded-full bg-blue-200 flex items-center justify-center text-blue-700 font-semibold text-sm">
