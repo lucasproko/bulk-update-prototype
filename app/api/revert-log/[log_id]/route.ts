@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { supabase } from '@/utils/supabase/client';
 
 export async function POST(
-  request: Request,
+  _request: Request,
   { params }: { params: { log_id: string } }
 ) {
   const originalLogId = parseInt(params.log_id, 10);

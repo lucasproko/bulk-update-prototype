@@ -1,5 +1,14 @@
 import React, { useState } from 'react';
-const users = [{
+
+// Define type for a single user based on sample data
+type User = {
+  id: number;
+  name: string;
+  initials: string;
+  color: string;
+};
+
+const users: User[] = [{
   id: 135,
   name: 'Giuseppe Bashirian',
   initials: 'GB',
@@ -45,12 +54,23 @@ const users = [{
   initials: 'LM',
   color: 'bg-indigo-500'
 }];
-export const UserList = ({
+
+// Define Props type
+interface UserListProps {
+  onSelectionChange: (selectedIds: number[]) => void;
+}
+
+export const UserList: React.FC<UserListProps> = ({
   onSelectionChange
 }) => {
-  const [selectedUsers, setSelectedUsers] = useState([]);
-  const handleSelectUser = userId => {
-    const newSelected = selectedUsers.includes(userId) ? selectedUsers.filter(id => id !== userId) : [...selectedUsers, userId];
+  // Explicitly type the state for selected user IDs
+  const [selectedUsers, setSelectedUsers] = useState<number[]>([]);
+  
+  // Type the userId parameter
+  const handleSelectUser = (userId: number) => {
+    const newSelected = selectedUsers.includes(userId) ? 
+        selectedUsers.filter(id => id !== userId) : 
+        [...selectedUsers, userId];
     setSelectedUsers(newSelected);
     onSelectionChange(newSelected);
   };
