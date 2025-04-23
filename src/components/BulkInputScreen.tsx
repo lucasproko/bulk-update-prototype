@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 // Import from the new config file
-import { sharedAvailableAttributes, getAttributeLabel, Attribute } from '@/config/attributes.ts'; 
+import { getAttributeLabel } from '@/config/attributes.ts';
 
 // Define the structure for an attribute (duplicate for now, move later)
 // interface Attribute { ... }
@@ -9,11 +9,11 @@ import { sharedAvailableAttributes, getAttributeLabel, Attribute } from '@/confi
 type Employee = {
   id: string;
   full_name?: string;
-  [key: string]: any;
+  [key: string]: unknown;
 };
 
 // Define the type for the changes record
-type ChangeRecord = Record<string, Record<string, any>>;
+type ChangeRecord = Record<string, Record<string, unknown>>;
 
 // Props for the BulkInputScreen
 interface BulkInputScreenProps {
@@ -45,7 +45,7 @@ export const BulkInputScreen: React.FC<BulkInputScreenProps> = ({
   const handleInputChange = (
     employeeId: string,
     attributeId: string,
-    value: any
+    value: unknown
   ) => {
     setChanges((prevChanges) => ({
       ...prevChanges,
@@ -95,7 +95,7 @@ export const BulkInputScreen: React.FC<BulkInputScreenProps> = ({
     // Filter out empty changes before previewing (optional)
     const finalChanges: ChangeRecord = {};
     Object.entries(changes).forEach(([empId, attrs]) => {
-      const empChanges: Record<string, any> = {};
+      const empChanges: Record<string, unknown> = {};
       Object.entries(attrs).forEach(([attrId, value]) => {
         // Only include if value is not empty or significantly different from original?
         // For now, include all entered values.
@@ -219,7 +219,7 @@ export const BulkInputScreen: React.FC<BulkInputScreenProps> = ({
                         <input
                           type="text" // Default to text for now
                           placeholder="Enter new value..."
-                          value={changes[employee.id]?.[attrId] ?? ''}
+                          value={String(changes[employee.id]?.[attrId] ?? '')}
                           onChange={(e) => handleInputChange(employee.id, attrId, e.target.value)}
                           className="w-full px-2 py-1 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
                         />

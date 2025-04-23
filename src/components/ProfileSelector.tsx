@@ -1,15 +1,16 @@
 import React, { useState, useEffect } from 'react';
 import { X, Search } from 'lucide-react';
-import { sharedAvailableAttributes, getAttributeLabel, Attribute } from '@/config/attributes';
+import { sharedAvailableAttributes, getAttributeLabel } from '@/config/attributes';
 
 // Define Employee type again (or import from shared location)
-type Employee = {
-  id: string;
-  full_name?: string;
-  job_title?: string;
-  department?: string;
-  [key: string]: any;
-};
+// Remove unused Employee type
+// type Employee = {
+//   id: string;
+//   full_name?: string;
+//   job_title?: string;
+//   department?: string;
+//   [key: string]: unknown; // Use unknown instead of any
+// };
 
 // Define props for ProfileSelector (Simplified)
 interface ProfileSelectorProps {

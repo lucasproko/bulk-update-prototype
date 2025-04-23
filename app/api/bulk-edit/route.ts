@@ -3,7 +3,7 @@ import { supabase } from '@/utils/supabase/client';
 
 // Define the expected request body structure
 interface BulkEditPayload {
-  changes: Record<string, Record<string, any>>; // { employeeId: { attribute: newValue } }
+  changes: Record<string, Record<string, unknown>>; // { employeeId: { attribute: newValue } }
   employeeIds: string[]; // Array of employee IDs being edited
   scheduleDateTime?: string; // Optional: ISO string for scheduling
 }
@@ -16,7 +16,9 @@ export async function POST(request: Request) {
     payload = await request.json();
     console.log("[API /api/bulk-edit] Parsed payload:", payload);
   } catch (error) {
-    console.error("[API /api/bulk-edit] Error parsing request body:", error);
+    // Catch block errors are unknown by default, assert as Error or handle appropriately
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error during parsing';
+    console.error("[API /api/bulk-edit] Error parsing request body:", errorMessage);
     return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
   }
 
@@ -94,13 +96,15 @@ export async function POST(request: Request) {
         console.log(`[API /api/bulk-edit] Scheduled batch process complete. Batch ID: ${batchId}`);
         return NextResponse.json({ success: true, batchId: batchId, status: 'Scheduled' }, { status: 200 });
 
-    } catch (error: any) {
-         console.error("[API /api/bulk-edit] An error occurred during the scheduled bulk edit process:", error);
+    } catch (error) {
+        // Catch block errors are unknown by default
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error during scheduled bulk edit';
+         console.error("[API /api/bulk-edit] An error occurred during the scheduled bulk edit process:", errorMessage);
          // Try to mark batch as failed if ID exists
-         if (batchId) { 
-             try { await supabase.from('change_batches').update({ status: 'Failed' }).eq('id', batchId); } catch { /* ignore */ } 
+         if (batchId) {
+             try { await supabase.from('change_batches').update({ status: 'Failed' }).eq('id', batchId); } catch { /* ignore */ }
          }
-         return NextResponse.json({ error: error.message || 'An internal server error occurred' }, { status: 500 });
+         return NextResponse.json({ error: errorMessage }, { status: 500 });
     }
   } else {
     // --- Handle IMMEDIATE Update (Refactored Logic) --- 
@@ -108,7 +112,7 @@ export async function POST(request: Request) {
     let batchId: number | null = null;
     let finalBatchStatus: string = 'Unknown';
     const logEntries = []; // To store logs before inserting
-    const oldValuesMap = new Map<string, Map<string, any>>(); // Map<employeeId, Map<attribute, oldValue>>
+    const oldValuesMap = new Map<string, Map<string, unknown>>(); // Replaced any with unknown
 
     try {
       // 1. Fetch ALL necessary old values upfront
@@ -128,18 +132,18 @@ export async function POST(request: Request) {
                       .then(({ data, error }) => {
                           if (error) {
                               console.warn(`[API /api/bulk-edit - IMMEDIATE] Error fetching old values for ${employeeId}:`, error);
-                              oldValuesMap.set(employeeId, new Map()); 
-                          } else if (data) {
-                              // Cast data to a record type
-                              const dataRecord = data as Record<string, any>; 
-                              const attrMap = new Map<string, any>();
+                              oldValuesMap.set(employeeId, new Map());
+                          } else if (data && typeof data === 'object') {
+                              // Cast only if it's a non-null object
+                              const dataRecord = data as Record<string, unknown>; 
+                              const attrMap = new Map<string, unknown>();
                               for (const attr of attributesToFetch) {
-                                  // Access the casted record
-                                  attrMap.set(attr, dataRecord[attr]); 
+                                  attrMap.set(attr, dataRecord[attr]);
                               }
                               oldValuesMap.set(employeeId, attrMap);
                           } else {
-                               oldValuesMap.set(employeeId, new Map()); // Employee not found or no data
+                               // Handle null or non-object data case
+                               oldValuesMap.set(employeeId, new Map()); 
                           }
                       })
               );
@@ -156,14 +160,14 @@ export async function POST(request: Request) {
 
       for (const employeeId of employeeIds) {
           // Find the specific entry for this employeeId, comparing string key to stringified employeeId
-          const changeEntry = changesEntries.find(([key, _]) => key === String(employeeId));
+          const changeEntry = changesEntries.find(([key]) => key === String(employeeId));
           
           if (!changeEntry) {
               console.warn(`[API /api/bulk-edit - IMMEDIATE] No changes found in payload for employeeId ${employeeId} (type mismatch?)`);
               continue; // Skip if no entry found (e.g., type mismatch)
           }
           
-          const [_, employeeChanges] = changeEntry;
+          const employeeChanges = changeEntry[1];
           const fetchedOldValues = oldValuesMap.get(employeeId) ?? new Map();
 
           // Log the object we are about to iterate over
@@ -181,9 +185,10 @@ export async function POST(request: Request) {
           for (const attributeName of attributeNames) {
               // We no longer need hasOwnProperty check when using Object.keys()
               console.log(`[API /api/bulk-edit - IMMEDIATE] Processing attribute: ${attributeName}`);
-              // @ts-ignore - Acknowledge potential implicit any for dynamic attribute access
-              const newValue = employeeChanges[attributeName];
-              const oldValue = fetchedOldValues.get(attributeName); 
+              // Type assertion on employeeChanges resolved the implicit any, remove directive
+              const changesObj = employeeChanges as Record<string, unknown>;
+              const newValue = changesObj[attributeName]; // Access directly
+              const oldValue = fetchedOldValues.get(attributeName);
               const logItem = {
                   employee_id: employeeId,
                   attribute_name: attributeName,
@@ -200,7 +205,8 @@ export async function POST(request: Request) {
              updatePromises.push(
                 supabase
                     .from('employees')
-                    .update(employeeChanges as Record<string, any>) 
+                    // Cast employeeChanges to the expected type for Supabase update
+                    .update(employeeChanges as Record<string, unknown>)
                     .eq('id', employeeId)
              );
              console.log(`[API /api/bulk-edit - IMMEDIATE] Prepared update promise for employee ${employeeId}`); // Log update prep
@@ -220,8 +226,10 @@ export async function POST(request: Request) {
       if (updateErrors.length > 0) {
           console.error("[API /api/bulk-edit - IMMEDIATE] Errors occurred during updates:", updateErrors);
           finalBatchStatus = 'CompletedWithErrors'; 
-          updateErrors.forEach((errorResult: any) => {
-              console.error(` - Update Failed: ${errorResult.reason?.message || 'Unknown error'}`);
+          // Assert errorResult as having a reason property (common in PromiseSettledResult)
+          updateErrors.forEach((errorResult) => {
+               const reason = (errorResult as { reason: Error | undefined }).reason;
+              console.error(` - Update Failed: ${reason?.message || 'Unknown error'}`);
           });
       } else {
           console.log("[API /api/bulk-edit - IMMEDIATE] Updates successful.");
@@ -271,12 +279,14 @@ export async function POST(request: Request) {
       console.log(`[API /api/bulk-edit - IMMEDIATE] Process complete. Batch ID: ${batchId}, Status: ${finalBatchStatus}`);
       return NextResponse.json({ success: true, batchId: batchId, status: finalBatchStatus }, { status: 200 });
 
-    } catch (error: any) {
-       console.error("[API /api/bulk-edit - IMMEDIATE] An error occurred:", error);
+    } catch (error) {
+       // Catch block errors are unknown by default
+       const errorMessage = error instanceof Error ? error.message : 'Unknown error during immediate bulk edit';
+       console.error("[API /api/bulk-edit - IMMEDIATE] An error occurred:", errorMessage);
        if (batchId && finalBatchStatus !== 'Failed') { 
            try { await supabase.from('change_batches').update({ status: 'Failed' }).eq('id', batchId); } catch { /* ignore */ } 
        }
-       return NextResponse.json({ error: error.message || 'An internal server error occurred' }, { status: 500 });
+       return NextResponse.json({ error: errorMessage }, { status: 500 });
     }
   }
   // Should not reach here if isScheduled or !isScheduled is handled

@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { X, Plus, Trash2 } from 'lucide-react';
 // Import from the new config file
-import { sharedAvailableAttributes, getAttributeLabel, Attribute } from '@/config/attributes.ts'; 
+import { sharedAvailableAttributes } from '@/config/attributes.ts';
 
 // Define filter structure
 interface Filter {
@@ -69,8 +69,12 @@ export const FilterModal: React.FC<FilterModalProps> = ({
 
   // Handle Apply button click
   const handleApply = () => {
-    // Remove the internal id before passing filters back
-    const filtersToApply = filters.map(({ id, ...rest }) => rest);
+    // Create new objects without the id property
+    const filtersToApply = filters.map(f => ({
+        attribute: f.attribute,
+        operator: f.operator,
+        value: f.value,
+    }));
     // Filter out potentially invalid/incomplete filters (e.g., empty attribute or operator)
     const validFilters = filtersToApply.filter(f => f.attribute && f.operator && (f.value || ['is_empty', 'is_not_empty'].includes(f.operator)));
     onApplyFilters(validFilters);
@@ -98,7 +102,7 @@ export const FilterModal: React.FC<FilterModalProps> = ({
           {filters.length === 0 && (
               <p className="text-center text-gray-500 italic">No filters applied. Add a filter to begin.</p>
           )}
-          {filters.map((filter, index) => {
+          {filters.map((filter) => {
             const requiresValue = !['is_empty', 'is_not_empty'].includes(filter.operator);
             return (
               <div key={filter.id} className="flex items-center space-x-2 bg-gray-50 p-3 rounded-md border">

@@ -1,17 +1,17 @@
 import React, { useState } from 'react';
 // Import from the new config file
-import { sharedAvailableAttributes, getAttributeLabel, Attribute } from '@/config/attributes.ts'; 
+import { getAttributeLabel } from '@/config/attributes.ts'; 
 import { ScheduleModal } from './ScheduleModal.tsx'; // Import the new modal
 
 // Define structure for Employee (can be imported if moved)
 type Employee = {
   id: string;
   full_name?: string;
-  [key: string]: any;
+  [key: string]: unknown;
 };
 
 // Define the structure for changes
-type ChangeRecord = Record<string, Record<string, any>>;
+type ChangeRecord = Record<string, Record<string, unknown>>;
 
 // Props for the PreviewChangesScreen
 interface PreviewChangesScreenProps {
@@ -24,7 +24,7 @@ interface PreviewChangesScreenProps {
 }
 
 // Helper to format value for display
-const formatValue = (value: any): string => {
+const formatValue = (value: unknown): string => {
     if (value === null || value === undefined || value === '') {
         return ''; // Represent empty/null consistently
     }

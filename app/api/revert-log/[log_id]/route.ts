@@ -76,12 +76,17 @@ export async function POST(
     console.log(`[API /api/revert-log] Created revert batch with ID: ${revertBatchId}`);
 
     // 3. Perform the single employee update (revert to old_value)
-    let valueToRevertTo: any = originalLog.old_value;
+    let valueToRevertTo: unknown = originalLog.old_value;
     // Basic type guessing (same simplification as revert-batch)
     if (originalLog.old_value !== null) {
-        if (!isNaN(Number(originalLog.old_value))) valueToRevertTo = Number(originalLog.old_value);
-        else if (originalLog.old_value.toLowerCase() === 'true') valueToRevertTo = true;
-        else if (originalLog.old_value.toLowerCase() === 'false') valueToRevertTo = false;
+        const num = Number(originalLog.old_value);
+        if (!isNaN(num)) {
+            valueToRevertTo = num;
+        } else if (originalLog.old_value.toLowerCase() === 'true') {
+            valueToRevertTo = true;
+        } else if (originalLog.old_value.toLowerCase() === 'false') {
+            valueToRevertTo = false;
+        } // else keep as string
     }
 
     const updateData = { [originalLog.attribute_name]: valueToRevertTo };
@@ -144,11 +149,13 @@ export async function POST(
     console.log(`[API /api/revert-log] Successfully processed revert for log ID: ${originalLogId}. New Batch ID: ${revertBatchId}`);
     return NextResponse.json({ success: true, message: 'Log reverted successfully', revertBatchId: revertBatchId });
 
-  } catch (error: any) {
+  } catch (error) {
+    // Catch block errors are unknown by default
+    const errorMessage = error instanceof Error ? error.message : 'An internal server error occurred';
     console.error("[API /api/revert-log] An error occurred:", error);
     // --- TODO: Rollback logic if using transactions ---
     // If revert batch was created, try marking it as failed
     // ... (similar error handling as in bulk-edit)
-    return NextResponse.json({ error: error.message || 'An internal server error occurred' }, { status: 500 });
+    return NextResponse.json({ error: errorMessage }, { status: 500 });
   }
 } 

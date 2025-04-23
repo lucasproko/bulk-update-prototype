@@ -1,5 +1,5 @@
 import React from 'react';
-import { sharedAvailableAttributes, Attribute } from '@/config/attributes.ts'; // Import from new file
+import { sharedAvailableAttributes } from '@/config/attributes.ts'; // Removed unused Attribute import
 
 // --- Common Attributes based on Supabase Schema ---
 // Define in a shared location ideally (e.g., src/config/attributes.ts)

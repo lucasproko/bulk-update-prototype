@@ -1,9 +1,8 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import Link from 'next/link';
-import { Users, History, Search, HelpCircle, Settings as SettingsIcon, Bell } from 'lucide-react'; // Added icons
+import { Users, History, Search, HelpCircle, Settings as SettingsIcon, Bell, Building2 } from 'lucide-react'; // Added icons
 import "../src/index.css"; // Import global styles from src
-import Image from 'next/image'; // Import Next.js Image component
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -28,13 +27,7 @@ export default function RootLayout({
           <div className="flex items-center h-full"> {/* Container for logo and search */}
             {/* Logo Container (aligned with sidebar width) */}
             <div className={`${sidebarWidthClass} flex items-center justify-center h-full flex-shrink-0`}>
-              <Image
-                src="/rippling-logo.png" // Path relative to public directory
-                alt="Rippling Logo"
-                width={40} // Adjust size as needed
-                height={40} // Adjust size as needed
-                className="object-contain" // Ensures image scales nicely
-              />
+              <Building2 className="h-8 w-8 text-white" />
             </div>
             {/* Search bar container (starts after logo) */}
             <div className="relative flex-shrink-0 ml-6"> {/* Added ml-6 for spacing */}

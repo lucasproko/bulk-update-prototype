@@ -28,8 +28,9 @@ type Employee = {
   work_location?: string;
   base_salary?: number; // Assuming number
   currency?: string;
-  // Add other relevant fields as needed based on your 'employees' table schema
-  [key: string]: any; // Allow dynamic access
+  team?: string; // Explicitly add team if it's used
+  // Restore index signature for dynamic access needed elsewhere
+  [key: string]: unknown; 
 };
 
 // Define filter structure (matching FilterModal, excluding id)
@@ -62,7 +63,7 @@ export const PeopleList = () => {
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   // Add state for pending changes from BulkInputScreen
-  const [pendingChanges, setPendingChanges] = useState<Record<string, Record<string, any>>>({});
+  const [pendingChanges, setPendingChanges] = useState<Record<string, Record<string, unknown>>>({});
 
   // State for active filters applied from the modal
   const [activeFilters, setActiveFilters] = useState<AppliedFilter[]>([]);
@@ -70,7 +71,6 @@ export const PeopleList = () => {
 
   // --- Add state for error/success feedback specific to API calls ---
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const [submitSuccess, setSubmitSuccess] = useState<string | null>(null);
 
   // --- Function to fetch employees (defined here for reuse) ---
   const fetchEmployees = async () => {
@@ -118,13 +118,20 @@ export const PeopleList = () => {
         filtered = filtered.filter(employee => {
             // Log the result of the .every() check for each employee
             const doesEmployeeMatchAll = currentActiveFilters.every((filter: AppliedFilter) => {
-                const value = employee[filter.attribute];
+                const value = employee[filter.attribute]; // value is unknown due to index signature
                 const filterValue = filter.value;
                 const operator = filter.operator;
                 let match = false;
                 
-                // Handle string comparisons with trim and lowercase
-                const stringValue = (value === null || value === undefined) ? '' : String(value).trim().toLowerCase();
+                // Handle string comparisons: Check type before calling string methods
+                let stringValue = '';
+                if (typeof value === 'string') {
+                  stringValue = value.trim().toLowerCase();
+                } else if (value !== null && value !== undefined) {
+                  // If not string but not null/undefined, convert to string for comparison (e.g., numbers)
+                  stringValue = String(value).trim().toLowerCase();
+                } // If null/undefined, stringValue remains ''
+                
                 const stringFilterValue = String(filterValue).trim().toLowerCase(); // Trim filter value too
 
                 switch (operator) {
@@ -218,7 +225,7 @@ export const PeopleList = () => {
   };
 
   // Handler for Preview button from BulkInputScreen
-  const handlePreview = (changesData: Record<string, Record<string, any>>) => {
+  const handlePreview = (changesData: Record<string, Record<string, unknown>>) => {
     console.log("Changes received for preview:", changesData);
     setPendingChanges(changesData);
     setCurrentView('preview'); // Navigate to the Preview step
@@ -246,7 +253,6 @@ export const PeopleList = () => {
     console.log("Attempting to confirm changes via API:", pendingChanges);
     console.log("Employee IDs for API:", employeesForEditing);
     setSubmitError(null); // Clear previous errors/success
-    setSubmitSuccess(null); // Clear previous success message state
     
     try {
       const response = await fetch('/api/bulk-edit', {
@@ -261,9 +267,6 @@ export const PeopleList = () => {
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Unknown API error');
 
-      // setSubmitSuccess(`Changes submitted successfully! Batch ID: ${result.batchId}`); // Remove success state update
-      // alert(`Changes submitted successfully! Batch ID: ${result.batchId}`); // Remove alert
-      
       // Reset state and return to list
       setAttributesForEditing([]);
       setEmployeesForEditing([]);
@@ -272,10 +275,12 @@ export const PeopleList = () => {
       setCurrentView('list');
       fetchEmployees(); 
       router.push('/audit'); // Navigate to audit page
-    } catch (error: any) {
+    } catch (error) {
+      // Type catch error
+      const message = error instanceof Error ? error.message : 'Unknown error';
       console.error("Error confirming changes:", error);
-      setSubmitError(`Failed to submit changes: ${error.message}`);
-      alert(`Failed to submit changes: ${error.message || 'Network error'}`); // Keep error alert for now
+      setSubmitError(`Failed to submit changes: ${message}`);
+      alert(`Failed to submit changes: ${message || 'Network error'}`); // Keep error alert for now
     }
   };
 
@@ -292,8 +297,7 @@ export const PeopleList = () => {
       console.log("Changes:", pendingChanges);
       console.log("Employee IDs:", employeesForEditing);
       setSubmitError(null); // Clear previous errors/success
-      setSubmitSuccess(null); // Clear previous success message state
-
+      
       try {
         const response = await fetch('/api/bulk-edit', {
           method: 'POST',
@@ -308,9 +312,6 @@ export const PeopleList = () => {
         const result = await response.json();
         if (!response.ok) throw new Error(result.error || 'Unknown API error');
 
-        // setSubmitSuccess(`Changes scheduled successfully for ${new Date(scheduleDateTime).toLocaleString()}! Batch ID: ${result.batchId}`); // Remove success state update
-        // alert(`Changes scheduled successfully for ${new Date(scheduleDateTime).toLocaleString()}! Batch ID: ${result.batchId}`); // Remove alert
-
         // Reset state and return to list
         setAttributesForEditing([]);
         setEmployeesForEditing([]);
@@ -319,10 +320,12 @@ export const PeopleList = () => {
         setCurrentView('list');
         router.push('/audit'); // Navigate to audit page
         // No need to refetch immediately for scheduled changes
-      } catch (error: any) {
+      } catch (error) {
+        // Type catch error
+        const message = error instanceof Error ? error.message : 'Unknown error';
         console.error("Error scheduling changes:", error);
-        setSubmitError(`Failed to schedule changes: ${error.message}`);
-        alert(`Failed to schedule changes: ${error.message || 'Network error'}`); // Keep error alert for now
+        setSubmitError(`Failed to schedule changes: ${message}`);
+        alert(`Failed to schedule changes: ${message || 'Network error'}`); // Keep error alert for now
       }
   };
 
@@ -532,6 +535,7 @@ export const PeopleList = () => {
                       </td>
                       {selectedAttributes.map(attr => (
                         <td key={attr} className="p-4 text-gray-600 min-w-[150px] truncate">
+                          {/* Safely convert unknown value to string for display */}
                           {employee[attr] !== null && employee[attr] !== undefined ? String(employee[attr]) : 'N/A'}
                         </td>
                       ))}

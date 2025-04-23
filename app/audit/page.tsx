@@ -94,9 +94,11 @@ export default function AuditPage() {
 
       if (fetchError) throw fetchError;
       setScheduledBatches(data || []);
-    } catch (err: any) {
+    } catch (err) {
+      // Type catch error
+      const message = err instanceof Error ? err.message : 'Unknown error';
       console.error("Error fetching scheduled batches:", err);
-      setError(`Failed to load scheduled batches: ${err.message}`);
+      setError(`Failed to load scheduled batches: ${message}`);
       setScheduledBatches([]); // Clear data on error
     } finally {
       setIsLoadingScheduled(false);
@@ -119,9 +121,11 @@ export default function AuditPage() {
 
       if (fetchError) throw fetchError;
       setCompletedBatches(data || []);
-    } catch (err: any) {
+    } catch (err) {
+      // Type catch error
+      const message = err instanceof Error ? err.message : 'Unknown error';
       console.error("Error fetching completed batches:", err);
-      setError(`Failed to load completed batches: ${err.message}`); // Keep generic error
+      setError(`Failed to load completed batches: ${message}`); // Keep generic error
       setCompletedBatches([]); 
     } finally {
       setIsLoadingCompleted(false);
@@ -147,10 +151,12 @@ export default function AuditPage() {
 
       if (fetchError) throw fetchError;
       setSelectedBatchLogs(data || []);
-    } catch (err: any) {
+    } catch (err) {
+      // Type catch error
+      const message = err instanceof Error ? err.message : 'Unknown error';
       console.error(`Error fetching logs for batch ${batchId}:`, err);
       // Set error specific to log fetching for display inside the modal
-      setError(`Failed to load logs for batch ${batchId}: ${err.message}`);
+      setError(`Failed to load logs for batch ${batchId}: ${message}`);
       setSelectedBatchLogs([]);
     } finally {
       setIsLoadingLogs(false);
@@ -205,10 +211,12 @@ export default function AuditPage() {
       await fetchScheduledBatches();
       await fetchCompletedBatches();
 
-    } catch (err: any) {
+    } catch (err) {
+      // Type catch error
+      const message = err instanceof Error ? err.message : 'Unknown error';
       console.error("Error cancelling batch:", err);
-      setActionError(`Error cancelling batch #${batchId}: ${err.message}`);
-      alert(`Error cancelling batch #${batchId}: ${err.message}`);
+      setActionError(`Error cancelling batch #${batchId}: ${message}`);
+      alert(`Error cancelling batch #${batchId}: ${message}`);
     } finally {
       setIsSubmitting(false);
     }
@@ -236,10 +244,12 @@ export default function AuditPage() {
       alert(`Batch #${batchId} reverted successfully. Revert recorded in new batch #${result.revertBatchId}.`);
       await fetchCompletedBatches();
 
-    } catch (err: any) {
+    } catch (err) {
+      // Type catch error
+      const message = err instanceof Error ? err.message : 'Unknown error';
       console.error("Error reverting batch:", err);
-      setActionError(`Error reverting batch #${batchId}: ${err.message}`);
-      alert(`Error reverting batch #${batchId}: ${err.message}`);
+      setActionError(`Error reverting batch #${batchId}: ${message}`);
+      alert(`Error reverting batch #${batchId}: ${message}`);
     } finally {
       setIsSubmitting(false);
     }
@@ -270,10 +280,12 @@ export default function AuditPage() {
       }
       await fetchCompletedBatches();
 
-    } catch (err: any) {
+    } catch (err) {
+      // Type catch error
+      const message = err instanceof Error ? err.message : 'Unknown error';
       console.error("Error reverting log:", err);
-      setActionError(`Error reverting log #${logId}: ${err.message}`);
-      alert(`Error reverting log #${logId}: ${err.message}`);
+      setActionError(`Error reverting log #${logId}: ${message}`);
+      alert(`Error reverting log #${logId}: ${message}`);
     } finally {
       setIsSubmitting(false);
     }

@@ -49,8 +49,10 @@ export async function POST(
     console.log(`[API /api/cancel-batch] Successfully cancelled batch ID: ${batchId}`);
     return NextResponse.json({ success: true, message: 'Batch cancelled successfully' });
 
-  } catch (error: any) {
-    console.error("[API /api/cancel-batch] An error occurred:", error);
-    return NextResponse.json({ error: error.message || 'An internal server error occurred' }, { status: 500 });
+  } catch (error) {
+    // Catch block errors are unknown by default
+    const errorMessage = error instanceof Error ? error.message : 'An internal server error occurred';
+    console.error("[API /api/cancel-batch] An error occurred:", error); // Log the original error too
+    return NextResponse.json({ error: errorMessage }, { status: 500 });
   }
 } 

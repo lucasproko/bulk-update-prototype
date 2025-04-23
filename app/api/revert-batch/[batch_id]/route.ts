@@ -74,18 +74,23 @@ export async function POST(
     // 4. Process each original log: revert employee data and create new log
     const revertPromises = [];
     const revertLogEntries = [];
-    const employeeUpdatesMap: Record<string, Record<string, any>> = {};
+    const employeeUpdatesMap: Record<string, Record<string, unknown>> = {};
 
     for (const log of originalLogs) {
       // Prepare employee update: set attribute back to old_value
-      // Important: Need to handle type conversion if old_value was stored as text!
       // This is a simplification - real implementation needs robust type handling.
-      let valueToRevertTo: any = log.old_value;
+      let valueToRevertTo: unknown = log.old_value;
       // Basic type guessing (needs improvement based on schema knowledge)
       if (log.old_value !== null) {
-          if (!isNaN(Number(log.old_value))) valueToRevertTo = Number(log.old_value);
-          else if (log.old_value.toLowerCase() === 'true') valueToRevertTo = true;
-          else if (log.old_value.toLowerCase() === 'false') valueToRevertTo = false;
+          // Check if it looks like a number
+          const num = Number(log.old_value);
+          if (!isNaN(num)) {
+              valueToRevertTo = num;
+          } else if (log.old_value.toLowerCase() === 'true') {
+              valueToRevertTo = true;
+          } else if (log.old_value.toLowerCase() === 'false') {
+              valueToRevertTo = false;
+          } // else keep as string (original value)
       }
 
       // Group updates by employee_id
@@ -124,9 +129,10 @@ export async function POST(
     if (revertErrors.length > 0) {
       console.error('[API /api/revert-batch] Errors occurred during revert updates:', revertErrors);
       finalRevertStatus = 'CompletedWithErrors';
-      // Log specific errors
-      revertErrors.forEach((errorResult: any) => {
-           console.error(` - Revert Update Failed for employee (implicitly): ${errorResult.reason?.message || 'Unknown error'}`);
+      // Log specific errors, typing the errorResult
+      revertErrors.forEach((errorResult) => {
+           const reason = (errorResult as { reason: Error | undefined }).reason;
+           console.error(` - Revert Update Failed for employee (implicitly): ${reason?.message || 'Unknown error'}`);
       });
     }
 
@@ -167,11 +173,13 @@ export async function POST(
     console.log(`[API /api/revert-batch] Successfully processed revert for batch ID: ${originalBatchId}. New Batch ID: ${revertBatchId}`);
     return NextResponse.json({ success: true, message: 'Batch reverted successfully', revertBatchId: revertBatchId, status: finalRevertStatus });
 
-  } catch (error: any) {
+  } catch (error) {
+    // Catch block errors are unknown by default
+    const errorMessage = error instanceof Error ? error.message : 'An internal server error occurred';
     console.error("[API /api/revert-batch] An error occurred:", error);
     // --- TODO: Rollback logic if using transactions ---
     // If revert batch was created, try marking it as failed
     // ... (similar error handling as in bulk-edit)
-    return NextResponse.json({ error: error.message || 'An internal server error occurred' }, { status: 500 });
+    return NextResponse.json({ error: errorMessage }, { status: 500 });
   }
 } 
