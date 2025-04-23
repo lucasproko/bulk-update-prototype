@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { supabase } from '@/utils/supabase/client';
 
 export async function POST(
-  request: Request,
+  _request: Request,
   { params }: { params: { batch_id: string } }
 ) {
   const originalBatchId = parseInt(params.batch_id, 10);
