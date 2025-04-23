@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { supabase } from '@/utils/supabase/client';
 
 export async function POST(
-  request: Request, // Keep request parameter even if not used directly, as per Next.js convention
+  _request: Request, // Prefix with underscore as it's unused
   { params }: { params: { batch_id: string } }
 ) {
   const batchId = parseInt(params.batch_id, 10);
