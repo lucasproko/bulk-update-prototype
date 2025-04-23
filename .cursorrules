@@ -1,0 +1,71 @@
+I. General Principles
+Language & Framework: Use TypeScript (.ts/.tsx) and React with Next.js (App Router).
+Components: Exclusively use functional components with React Hooks. Avoid class components.
+Styling: Prioritize Tailwind CSS utility classes. Minimize custom CSS. Ensure consistency with existing Tailwind usage.
+Code Style: Maintain consistency with the existing codebase formatting and naming conventions. Adhere to ESLint rules (.eslintrc.cjs).
+Modularity: Keep components focused, small, and reusable where appropriate.
+
+II. Project Structure (Next.js App Router)
+App Directory: Place primary UI routes, layouts, and pages within the app/ directory (e.g., app/layout.tsx, app/page.tsx, app/dashboard/page.tsx).
+Source Directory: Place reusable components, utility functions, library code, and Supabase client setup within the src/ directory.
+UI Components: src/components/ (e.g., src/components/Button.tsx)
+Utilities: src/lib/ or src/utils/
+Supabase Client: src/utils/supabase/client.ts (or server client if needed later)
+API Routes: Use Route Handlers within the app/api/ directory (e.g., app/api/users/route.ts).
+Imports: Use the configured path alias @/* for imports from the src/ directory (e.g., import { Button } from '@/components/Button';). Use relative paths for imports within the same module scope (e.g., within src/components/).
+
+III. Tailwind CSS Usage
+Utility-First: Use Tailwind utility classes directly in JSX whenever possible.
+Custom CSS: Avoid custom CSS files unless absolutely necessary for complex styles not achievable with Tailwind. If needed, integrate properly via src/index.css or component-specific CSS Modules.
+Configuration: Extend or customize themes, colors, fonts, etc., only through tailwind.config.js.
+Responsiveness: Use Tailwind's responsive prefixes (sm:, md:, lg:, xl:, 2xl:) for adaptive layouts.
+Validation: Ensure all generated Tailwind class names are valid and exist in the configuration. Avoid typos.
+
+IV. React & Next.js Best Practices
+Component Types: Clearly distinguish between Server Components (default in app/) and Client Components ('use client'; directive). Fetch data directly in Server Components where possible. Use Client Components for interactivity, state (useState), effects (useEffect), and browser APIs.
+State Management: Use useState for local component state. For more complex or shared state, consider React Context or a dedicated state management library if the need arises (evaluate carefully).
+Side Effects: Use useEffect in Client Components for side effects (data fetching after mount, subscriptions, manual DOM manipulation if unavoidable). Include proper dependency arrays.
+Keys: Always provide a unique and stable key prop when rendering lists of elements.
+Props: Define clear Props types/interfaces for components using TypeScript. Use default props where sensible.
+Performance: Apply React.memo, useCallback, and useMemo judiciously to optimize performance, especially for components that re-render frequently or handle expensive computations. Consider virtualization for very large lists.
+Data Fetching (App Router):
+Server Components: Fetch data directly within the component using async/await. Use the Supabase server client if needed for elevated privileges (requires setup).
+Client Components: Fetch data within useEffect using the Supabase client, typically triggered on mount or by user interaction. Handle loading and error states.
+Route Handlers (app/api/): Use for dedicated API endpoints, often interacting with Supabase using a server client.
+
+V. Supabase Integration
+Client Usage: Import and use the shared Supabase client instance from src/utils/supabase/client.ts for client-side interactions. If server-side operations with elevated privileges are needed, set up and use a Supabase server client appropriately (e.g., in Route Handlers or Server Actions).
+Environment Variables:
+Access Supabase URL and Anon Key using process.env.NEXT_PUBLIC_SUPABASE_URL and process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY for the client-side client.
+Use non-prefixed variables (e.g., process.env.SUPABASE_SERVICE_ROLE_KEY) for server-side clients (if used) and ensure they are not prefixed with NEXT_PUBLIC_ to avoid exposing them to the browser.
+Queries & Mutations:
+Use the Supabase JavaScript client library methods (supabase.from(...).select(), .insert(), .update(), .delete(), .rpc()) for database operations.
+Always check for errors returned by Supabase calls (e.g., const { data, error } = await supabase...; if (error) { ... }).
+Row Level Security (RLS):
+Assume RLS is Enabled: Code should operate under the assumption that RLS is active on all relevant tables (like employees).
+Policy Definition: Define necessary RLS policies directly in the Supabase Dashboard (Authentication -> Policies) or via SQL scripts. Policies should be as restrictive as possible while allowing required functionality.
+Prototype Policies: For this prototype, use clearly defined, potentially permissive policies (e.g., Allow authenticated users to UPDATE employees USING (true)) but ensure they are documented as prototype-specific.
+Authentication: Utilize Supabase Auth helpers (supabase.auth.signInWithPassword, supabase.auth.onAuthStateChange, supabase.auth.getUser, etc.) for user management if login is implemented.
+
+VI. Testing and Verification (During Development)
+Supabase Dashboard (MCP):
+Schema: After migrations or table modifications, verify the changes in the Table Editor section.
+Data: After running inserts/updates/deletes via the UI/API, verify the data changes directly in the Table Editor. Check for expected values, nulls, and constraints.
+RLS: Double-check that the intended RLS Policies are active and correctly configured under Authentication -> Policies for the relevant tables.
+Auth Users: If using Auth, check user creation and status under Authentication -> Users.
+Browser Developer Tools (e.g., Brave DevTools):
+Network Tab: Inspect network requests made to Supabase. Verify the correct endpoints are called, check request payloads, and examine response data and status codes (e.g., 200 OK, 401 Unauthorized, 403 Forbidden due to RLS, 5xx Server Error).
+Console Tab: Check for any application errors, warnings, Supabase client errors (console.error), or custom console.log statements used for debugging.
+React DevTools (Extension): Inspect component hierarchy, props, and state to understand component behavior and data flow during interactions.
+UI Testing: Manually test the UI flows:
+Does the data load correctly?
+Do buttons and forms behave as expected?
+Are loading and error states handled gracefully?
+Is the UI responsive across different screen sizes (if applicable)?
+Specifically for Bulk Edit: Test selecting/deselecting users, attribute selection, inputting new values, previewing changes, and confirming/canceling.
+
+VII. Error Handling & Code Quality
+Graceful Errors: Implement user-friendly error handling. Display informative messages instead of crashing or showing raw errors.
+Supabase Errors: Explicitly handle potential errors returned from Supabase client operations. Log detailed errors to the console during development.
+React Errors: Address common React issues: missing keys, invalid hook usage, unhandled promises in useEffect.
+Linting/Formatting: Ensure code passes ESLint and Prettier checks (if configured). Run linting commands periodically.

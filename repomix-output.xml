@@ -1,0 +1,3722 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+<additional_info>
+
+</additional_info>
+
+</file_summary>
+
+<directory_structure>
+app/
+  api/
+    bulk-edit/
+      route.ts
+    cancel-batch/
+      [batch_id]/
+        route.ts
+    revert-batch/
+      [batch_id]/
+        route.ts
+    revert-log/
+      [log_id]/
+        route.ts
+  audit/
+    page.tsx
+  layout.tsx
+  page.tsx
+src/
+  components/
+    AttributeSelector.tsx
+    BulkInputScreen.tsx
+    EditAttributeModal.tsx
+    FilterModal.tsx
+    PeopleList.tsx
+    PreviewChangesScreen.tsx
+    ProfileSelector.tsx
+    ScheduleModal.tsx
+    Sidebar.tsx
+    UserList.tsx
+  config/
+    attributes.ts
+  lib/
+    utils.ts
+  utils/
+    supabase/
+      client.ts
+  index.css
+.cursorrules
+.eslintrc.cjs
+.gitignore
+next-env.d.ts
+package.json
+postcss.config.js
+README.md
+tailwind.config.js
+tsconfig.json
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="app/api/bulk-edit/route.ts">
+import { NextResponse } from 'next/server';
+import { supabase } from '@/utils/supabase/client';
+
+// Define the expected request body structure
+interface BulkEditPayload {
+  changes: Record<string, Record<string, any>>; // { employeeId: { attribute: newValue } }
+  employeeIds: string[]; // Array of employee IDs being edited
+  scheduleDateTime?: string; // Optional: ISO string for scheduling
+}
+
+export async function POST(request: Request) {
+  console.log("[API /api/bulk-edit] Received POST request");
+
+  let payload: BulkEditPayload;
+  try {
+    payload = await request.json();
+    console.log("[API /api/bulk-edit] Parsed payload:", payload);
+  } catch (error) {
+    console.error("[API /api/bulk-edit] Error parsing request body:", error);
+    return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
+  }
+
+  const { changes, employeeIds, scheduleDateTime } = payload;
+
+  // --- Input Validation (Basic) ---
+  if (!changes || typeof changes !== 'object' || Object.keys(changes).length === 0) {
+    return NextResponse.json({ error: 'Invalid changes data' }, { status: 400 });
+  }
+  if (!employeeIds || !Array.isArray(employeeIds) || employeeIds.length === 0) {
+    return NextResponse.json({ error: 'Missing or invalid employee IDs' }, { status: 400 });
+  }
+  // Ensure employeeIds in payload match keys in changes object
+  if (!employeeIds.every(id => changes[id])) {
+      return NextResponse.json({ error: 'Mismatch between employeeIds and changes object keys' }, { status: 400 });
+  }
+
+  // --- Authentication (Skipped for Prototype) ---
+  const userId = null; // Placeholder - In real app, get from session: const { data: { user } } = await supabase.auth.getUser(); userId = user?.id;
+
+  const isScheduled = !!scheduleDateTime;
+
+  if (isScheduled) {
+    // --- Handle Scheduled Update --- 
+    console.log(`[API /api/bulk-edit] Starting SCHEDULED batch process.`);
+    let batchId: number | null = null;
+    try {
+        // 1. Create SCHEDULED change_batches entry
+        const { data: batchData, error: batchError } = await supabase
+            .from('change_batches')
+            .insert({
+                status: 'Scheduled', // Directly set as Scheduled
+                scheduled_for: new Date(scheduleDateTime!).toISOString(),
+                user_id: userId,
+                description: `Scheduled bulk edit for ${employeeIds.length} employees.`,
+            })
+            .select('id')
+            .single();
+
+        if (batchError || !batchData) {
+            console.error("[API /api/bulk-edit] Error creating SCHEDULED change_batches entry:", batchError);
+            throw new Error(`Failed to create scheduled change batch: ${batchError?.message}`);
+        }
+        batchId = batchData.id;
+        console.log(`[API /api/bulk-edit] Created SCHEDULED change_batches entry with ID: ${batchId}`);
+
+        // 2. Create log entries for scheduled batch (no old_value fetching needed yet)
+        const logEntries = [];
+        for (const employeeId of employeeIds) {
+            const employeeChanges = changes[employeeId];
+            if (!employeeChanges) continue;
+            for (const attributeName in employeeChanges) {
+                const newValue = employeeChanges[attributeName];
+                logEntries.push({
+                    batch_id: batchId,
+                    employee_id: employeeId,
+                    attribute_name: attributeName,
+                    old_value: null, // Old value not relevant/fetched for scheduled task logs initially
+                    new_value: newValue !== undefined && newValue !== null ? String(newValue) : null,
+                });
+            }
+        }
+        if (logEntries.length > 0) {
+            console.log(`[API /api/bulk-edit] Inserting ${logEntries.length} change_logs entries for scheduled batch ${batchId}...`);
+            const { error: logError } = await supabase.from('change_logs').insert(logEntries);
+            if (logError) {
+                console.error("[API /api/bulk-edit] Error inserting scheduled change_logs:", logError);
+                // Attempt to mark batch as failed
+                await supabase.from('change_batches').update({ status: 'Failed' }).eq('id', batchId);
+                throw new Error(`Failed to insert scheduled change logs: ${logError.message}`);
+            }
+            console.log(`[API /api/bulk-edit] Successfully inserted scheduled logs.`);
+        }
+        
+        console.log(`[API /api/bulk-edit] Scheduled batch process complete. Batch ID: ${batchId}`);
+        return NextResponse.json({ success: true, batchId: batchId, status: 'Scheduled' }, { status: 200 });
+
+    } catch (error: any) {
+         console.error("[API /api/bulk-edit] An error occurred during the scheduled bulk edit process:", error);
+         // Try to mark batch as failed if ID exists
+         if (batchId) { 
+             try { await supabase.from('change_batches').update({ status: 'Failed' }).eq('id', batchId); } catch { /* ignore */ } 
+         }
+         return NextResponse.json({ error: error.message || 'An internal server error occurred' }, { status: 500 });
+    }
+  } else {
+    // --- Handle IMMEDIATE Update (Refactored Logic) --- 
+    console.log(`[API /api/bulk-edit] Starting IMMEDIATE batch process.`);
+    let batchId: number | null = null;
+    let finalBatchStatus: string = 'Unknown';
+    const logEntries = []; // To store logs before inserting
+    const oldValuesMap = new Map<string, Map<string, any>>(); // Map<employeeId, Map<attribute, oldValue>>
+
+    try {
+      // 1. Fetch ALL necessary old values upfront
+      console.log("[API /api/bulk-edit - IMMEDIATE] Fetching old values...");
+      const fetchPromises = [];
+      for (const employeeId of employeeIds) {
+          const employeeChanges = changes[employeeId];
+          if (!employeeChanges || Object.keys(employeeChanges).length === 0) continue;
+          const attributesToFetch = Object.keys(employeeChanges);
+          if (attributesToFetch.length > 0) {
+              fetchPromises.push(
+                  supabase
+                      .from('employees')
+                      .select(`id, ${attributesToFetch.join(',')}`)
+                      .eq('id', employeeId)
+                      .maybeSingle()
+                      .then(({ data, error }) => {
+                          if (error) {
+                              console.warn(`[API /api/bulk-edit - IMMEDIATE] Error fetching old values for ${employeeId}:`, error);
+                              oldValuesMap.set(employeeId, new Map()); 
+                          } else if (data) {
+                              // Cast data to a record type
+                              const dataRecord = data as Record<string, any>; 
+                              const attrMap = new Map<string, any>();
+                              for (const attr of attributesToFetch) {
+                                  // Access the casted record
+                                  attrMap.set(attr, dataRecord[attr]); 
+                              }
+                              oldValuesMap.set(employeeId, attrMap);
+                          } else {
+                               oldValuesMap.set(employeeId, new Map()); // Employee not found or no data
+                          }
+                      })
+              );
+          }
+      }
+      await Promise.all(fetchPromises); // Wait for all fetches to complete
+      console.log("[API /api/bulk-edit - IMMEDIATE] Finished fetching old values.");
+
+      // 2. Prepare Log Entries using pre-fetched old values
+      const updatePromises = []; // Prepare updates in the same loop
+      
+      const changesEntries = Object.entries(changes);
+      console.log(`[API /api/bulk-edit - IMMEDIATE] Preparing logs for ${changesEntries.length} entries...`); // Log: Start prep
+
+      for (const employeeId of employeeIds) {
+          // Find the specific entry for this employeeId, comparing string key to stringified employeeId
+          const changeEntry = changesEntries.find(([key, _]) => key === String(employeeId));
+          
+          if (!changeEntry) {
+              console.warn(`[API /api/bulk-edit - IMMEDIATE] No changes found in payload for employeeId ${employeeId} (type mismatch?)`);
+              continue; // Skip if no entry found (e.g., type mismatch)
+          }
+          
+          const [_, employeeChanges] = changeEntry;
+          const fetchedOldValues = oldValuesMap.get(employeeId) ?? new Map();
+
+          // Log the object we are about to iterate over
+          console.log(`[API /api/bulk-edit - IMMEDIATE] Inspecting employeeChanges for ${employeeId}:`, JSON.stringify(employeeChanges)); 
+
+          if (!employeeChanges || typeof employeeChanges !== 'object' || Object.keys(employeeChanges).length === 0) {
+              console.log(`[API /api/bulk-edit - IMMEDIATE] Skipping employee ${employeeId} due to invalid changes object.`);
+              continue;
+          }
+
+          // Modify inner loop to use Object.keys()
+          const attributeNames = Object.keys(employeeChanges);
+          console.log(`[API /api/bulk-edit - IMMEDIATE] Attributes to process for ${employeeId}:`, attributeNames); 
+
+          for (const attributeName of attributeNames) {
+              // We no longer need hasOwnProperty check when using Object.keys()
+              console.log(`[API /api/bulk-edit - IMMEDIATE] Processing attribute: ${attributeName}`);
+              // @ts-ignore - Acknowledge potential implicit any for dynamic attribute access
+              const newValue = employeeChanges[attributeName];
+              const oldValue = fetchedOldValues.get(attributeName); 
+              const logItem = {
+                  employee_id: employeeId,
+                  attribute_name: attributeName,
+                  old_value: oldValue !== undefined && oldValue !== null ? String(oldValue) : null,
+                  new_value: newValue !== undefined && newValue !== null ? String(newValue) : null,
+              };
+              logEntries.push(logItem);
+              console.log(`[API /api/bulk-edit - IMMEDIATE] Pushed log item:`, logItem); // Log: Item pushed
+          }
+          
+          // 3. Prepare update promise
+          // Ensure employeeChanges is valid before pushing update
+          if (attributeNames.length > 0) {
+             updatePromises.push(
+                supabase
+                    .from('employees')
+                    .update(employeeChanges as Record<string, any>) 
+                    .eq('id', employeeId)
+             );
+             console.log(`[API /api/bulk-edit - IMMEDIATE] Prepared update promise for employee ${employeeId}`); // Log update prep
+          } else {
+             console.log(`[API /api/bulk-edit - IMMEDIATE] No attributes to update for employee ${employeeId}, skipping update promise.`);
+          }
+      }
+      
+      console.log(`[API /api/bulk-edit - IMMEDIATE] Total raw logEntries prepared: ${logEntries.length}`); // Log: Total raw logs
+
+      // 4. Execute all updates
+      console.log(`[API /api/bulk-edit - IMMEDIATE] Performing ${updatePromises.length} updates...`);
+      const updateResults = await Promise.allSettled(updatePromises);
+      const updateErrors = updateResults.filter(result => result.status === 'rejected');
+
+      // 5. Determine final batch status
+      if (updateErrors.length > 0) {
+          console.error("[API /api/bulk-edit - IMMEDIATE] Errors occurred during updates:", updateErrors);
+          finalBatchStatus = 'CompletedWithErrors'; 
+          updateErrors.forEach((errorResult: any) => {
+              console.error(` - Update Failed: ${errorResult.reason?.message || 'Unknown error'}`);
+          });
+      } else {
+          console.log("[API /api/bulk-edit - IMMEDIATE] Updates successful.");
+          finalBatchStatus = 'Completed';
+      }
+
+      // 6. Create the change_batches entry
+      console.log(`[API /api/bulk-edit - IMMEDIATE] Creating batch entry with status: ${finalBatchStatus}`);
+      const { data: batchData, error: batchError } = await supabase
+          .from('change_batches')
+          .insert({
+              status: finalBatchStatus,
+              completed_at: new Date().toISOString(),
+              user_id: userId,
+              description: `Immediate bulk edit for ${employeeIds.length} employees.`,
+          })
+          .select('id')
+          .single();
+
+      if (batchError || !batchData) {
+          console.error("[API /api/bulk-edit - IMMEDIATE] CRITICAL: Failed to create change_batches entry!", batchError);
+          throw new Error(`Failed to create change batch entry: ${batchError?.message}`);
+      }
+      batchId = batchData.id;
+      console.log(`[API /api/bulk-edit - IMMEDIATE] Created batch ID: ${batchId}`);
+
+      // 7. Add batch_id to log entries and insert them
+      console.log(`[API /api/bulk-edit - IMMEDIATE] Mapping logEntries to add batchId ${batchId}...`); // Log: Before map
+      const logsWithBatchId = logEntries.map(log => ({ ...log, batch_id: batchId }));
+      console.log(`[API /api/bulk-edit - IMMEDIATE] Resulting logsWithBatchId length: ${logsWithBatchId.length}`); // Log: After map
+
+      if (logsWithBatchId.length > 0) {
+         console.log(`[API /api/bulk-edit - IMMEDIATE] Attempting to insert ${logsWithBatchId.length} change_logs entries...`); // Log: Before insert
+          const { error: logError } = await supabase.from('change_logs').insert(logsWithBatchId);
+          if (logError) {
+              console.error("[API /api/bulk-edit - IMMEDIATE] CRITICAL: Failed to insert change_logs after batch creation!", logError);
+              await supabase.from('change_batches').update({ status: 'Failed' }).eq('id', batchId);
+              finalBatchStatus = 'Failed';
+              throw new Error(`Failed to insert change logs: ${logError.message}`);
+          } else {
+             console.log(`[API /api/bulk-edit - IMMEDIATE] Successfully inserted change_logs.`); // Log: After insert success
+          }
+      } else {
+           console.warn(`[API /api/bulk-edit - IMMEDIATE] Skipped inserting logs because logsWithBatchId array was empty.`); // Log: Skipped insert!
+      }
+
+      console.log(`[API /api/bulk-edit - IMMEDIATE] Process complete. Batch ID: ${batchId}, Status: ${finalBatchStatus}`);
+      return NextResponse.json({ success: true, batchId: batchId, status: finalBatchStatus }, { status: 200 });
+
+    } catch (error: any) {
+       console.error("[API /api/bulk-edit - IMMEDIATE] An error occurred:", error);
+       if (batchId && finalBatchStatus !== 'Failed') { 
+           try { await supabase.from('change_batches').update({ status: 'Failed' }).eq('id', batchId); } catch { /* ignore */ } 
+       }
+       return NextResponse.json({ error: error.message || 'An internal server error occurred' }, { status: 500 });
+    }
+  }
+  // Should not reach here if isScheduled or !isScheduled is handled
+  return NextResponse.json({ error: 'Invalid request path' }, { status: 400 }); 
+}
+</file>
+
+<file path="app/api/cancel-batch/[batch_id]/route.ts">
+import { NextResponse } from 'next/server';
+import { supabase } from '@/utils/supabase/client';
+
+export async function POST(
+  request: Request, // Keep request parameter even if not used directly, as per Next.js convention
+  { params }: { params: { batch_id: string } }
+) {
+  const batchId = parseInt(params.batch_id, 10);
+  console.log(`[API /api/cancel-batch] Received request for batch ID: ${batchId}`);
+
+  if (isNaN(batchId)) {
+    return NextResponse.json({ error: 'Invalid Batch ID format' }, { status: 400 });
+  }
+
+  // --- Authentication/Authorization (Skipped for Prototype) ---
+  // Check if the user has permission to cancel this batch
+
+  try {
+    // 1. Find the batch and check its status
+    const { data: batchData, error: fetchError } = await supabase
+      .from('change_batches')
+      .select('status')
+      .eq('id', batchId)
+      .single();
+
+    if (fetchError) {
+      if (fetchError.code === 'PGRST116') { // Not found code
+        return NextResponse.json({ error: 'Batch not found' }, { status: 404 });
+      }
+      console.error('[API /api/cancel-batch] Error fetching batch:', fetchError);
+      throw new Error(`Failed to fetch batch: ${fetchError.message}`);
+    }
+
+    if (!batchData || batchData.status !== 'Scheduled') {
+      return NextResponse.json({ error: 'Batch cannot be cancelled (must be Scheduled)' }, { status: 400 });
+    }
+
+    // 2. Update the batch status to 'Cancelled'
+    const { error: updateError } = await supabase
+      .from('change_batches')
+      .update({ status: 'Cancelled', completed_at: new Date().toISOString() }) // Mark completion time as cancellation time
+      .eq('id', batchId);
+
+    if (updateError) {
+      console.error('[API /api/cancel-batch] Error updating batch status:', updateError);
+      throw new Error(`Failed to update batch status: ${updateError.message}`);
+    }
+
+    console.log(`[API /api/cancel-batch] Successfully cancelled batch ID: ${batchId}`);
+    return NextResponse.json({ success: true, message: 'Batch cancelled successfully' });
+
+  } catch (error: any) {
+    console.error("[API /api/cancel-batch] An error occurred:", error);
+    return NextResponse.json({ error: error.message || 'An internal server error occurred' }, { status: 500 });
+  }
+}
+</file>
+
+<file path="app/api/revert-batch/[batch_id]/route.ts">
+import { NextResponse } from 'next/server';
+import { supabase } from '@/utils/supabase/client';
+
+export async function POST(
+  request: Request,
+  { params }: { params: { batch_id: string } }
+) {
+  const originalBatchId = parseInt(params.batch_id, 10);
+  console.log(`[API /api/revert-batch] Received request for batch ID: ${originalBatchId}`);
+
+  if (isNaN(originalBatchId)) {
+    return NextResponse.json({ error: 'Invalid Original Batch ID format' }, { status: 400 });
+  }
+
+  // --- Authentication/Authorization (Skipped for Prototype) ---
+  const userId = null; // Placeholder
+
+  // --- TODO: Implement proper transaction handling in production ---
+
+  try {
+    // 1. Fetch the original batch to check status and get description
+    const { data: originalBatch, error: fetchBatchError } = await supabase
+      .from('change_batches')
+      .select('status, description')
+      .eq('id', originalBatchId)
+      .single();
+
+    if (fetchBatchError) {
+        if (fetchBatchError.code === 'PGRST116') { return NextResponse.json({ error: 'Original batch not found' }, { status: 404 }); }
+        console.error('[API /api/revert-batch] Error fetching original batch:', fetchBatchError);
+        throw new Error(`Failed to fetch original batch: ${fetchBatchError.message}`);
+    }
+
+    // Check if the original batch is in a revertable state (e.g., Completed)
+    if (!['Completed', 'CompletedWithErrors'].includes(originalBatch.status)) {
+        return NextResponse.json({ error: `Original batch cannot be reverted (status is ${originalBatch.status})` }, { status: 400 });
+    }
+
+    // 2. Fetch all change logs for the original batch
+    const { data: originalLogs, error: fetchLogError } = await supabase
+      .from('change_logs')
+      .select('id, employee_id, attribute_name, old_value, new_value')
+      .eq('batch_id', originalBatchId);
+
+    if (fetchLogError) {
+      console.error('[API /api/revert-batch] Error fetching original logs:', fetchLogError);
+      throw new Error(`Failed to fetch original logs: ${fetchLogError.message}`);
+    }
+
+    if (!originalLogs || originalLogs.length === 0) {
+      return NextResponse.json({ error: 'No logs found for the original batch to revert' }, { status: 404 });
+    }
+
+    // 3. Create a new 'Revert' batch entry
+    const revertDescription = `Revert of Batch #${originalBatchId}: ${originalBatch.description}`.substring(0, 255); // Add description limit
+    const { data: revertBatchData, error: revertBatchError } = await supabase
+      .from('change_batches')
+      .insert({
+        status: 'PendingRevert', // Start as pending revert
+        user_id: userId,
+        description: revertDescription,
+        reverted_batch_id: originalBatchId, // Link to the original batch
+      })
+      .select('id')
+      .single();
+
+    if (revertBatchError || !revertBatchData) {
+      console.error('[API /api/revert-batch] Error creating revert batch entry:', revertBatchError);
+      throw new Error(`Failed to create revert batch: ${revertBatchError?.message}`);
+    }
+    const revertBatchId = revertBatchData.id;
+    console.log(`[API /api/revert-batch] Created revert batch with ID: ${revertBatchId}`);
+
+    // 4. Process each original log: revert employee data and create new log
+    const revertPromises = [];
+    const revertLogEntries = [];
+    const employeeUpdatesMap: Record<string, Record<string, any>> = {};
+
+    for (const log of originalLogs) {
+      // Prepare employee update: set attribute back to old_value
+      // Important: Need to handle type conversion if old_value was stored as text!
+      // This is a simplification - real implementation needs robust type handling.
+      let valueToRevertTo: any = log.old_value;
+      // Basic type guessing (needs improvement based on schema knowledge)
+      if (log.old_value !== null) {
+          if (!isNaN(Number(log.old_value))) valueToRevertTo = Number(log.old_value);
+          else if (log.old_value.toLowerCase() === 'true') valueToRevertTo = true;
+          else if (log.old_value.toLowerCase() === 'false') valueToRevertTo = false;
+      }
+
+      // Group updates by employee_id
+      if (!employeeUpdatesMap[log.employee_id]) {
+        employeeUpdatesMap[log.employee_id] = {};
+      }
+      employeeUpdatesMap[log.employee_id][log.attribute_name] = valueToRevertTo;
+
+      // Prepare log entry for the revert action
+      revertLogEntries.push({
+        batch_id: revertBatchId,
+        employee_id: log.employee_id,
+        attribute_name: log.attribute_name,
+        old_value: log.new_value, // The 'new' value from the original log is the 'old' value for the revert
+        new_value: log.old_value, // The 'old' value from the original log is the 'new' value for the revert
+        reverted_log_id: log.id, // Link to the original log entry
+      });
+    }
+
+    // Perform employee updates grouped by employee
+    for (const employeeId in employeeUpdatesMap) {
+      revertPromises.push(
+        supabase
+          .from('employees')
+          .update(employeeUpdatesMap[employeeId])
+          .eq('id', employeeId)
+      );
+    }
+    
+    // Execute all revert updates
+    console.log(`[API /api/revert-batch] Performing ${revertPromises.length} revert updates...`);
+    const revertResults = await Promise.allSettled(revertPromises);
+    const revertErrors = revertResults.filter(result => result.status === 'rejected');
+
+    let finalRevertStatus = 'Completed';
+    if (revertErrors.length > 0) {
+      console.error('[API /api/revert-batch] Errors occurred during revert updates:', revertErrors);
+      finalRevertStatus = 'CompletedWithErrors';
+      // Log specific errors
+      revertErrors.forEach((errorResult: any) => {
+           console.error(` - Revert Update Failed for employee (implicitly): ${errorResult.reason?.message || 'Unknown error'}`);
+      });
+    }
+
+    // Insert all revert log entries
+    if (revertLogEntries.length > 0) {
+        console.log(`[API /api/revert-batch] Inserting ${revertLogEntries.length} revert change_logs entries...`);
+        const { error: logInsertError } = await supabase.from('change_logs').insert(revertLogEntries);
+        if (logInsertError) {
+            // This is bad - updates may have happened, but logs failed. Mark batch as problematic.
+            console.error('[API /api/revert-batch] Critical: Failed to insert revert logs after updates!', logInsertError);
+            finalRevertStatus = 'Failed'; // Mark as failed if logs couldn't be inserted
+        } else {
+            console.log(`[API /api/revert-batch] Successfully inserted revert logs.`);
+        }
+    }
+
+    // 5. Update the revert batch status
+    const { error: updateRevertBatchError } = await supabase
+      .from('change_batches')
+      .update({ status: finalRevertStatus, completed_at: new Date().toISOString() })
+      .eq('id', revertBatchId);
+
+    if (updateRevertBatchError) {
+      // Log error, but proceed if updates were okay
+      console.error('[API /api/revert-batch] Error updating revert batch status:', updateRevertBatchError);
+    }
+
+    // (Optional) 6. Update the original batch status to 'Reverted'
+    const { error: updateOriginalBatchError } = await supabase
+      .from('change_batches')
+      .update({ status: 'Reverted' })
+      .eq('id', originalBatchId);
+      
+    if (updateOriginalBatchError){
+        console.warn('[API /api/revert-batch] Failed to update original batch status to Reverted:', updateOriginalBatchError);
+    }
+
+    console.log(`[API /api/revert-batch] Successfully processed revert for batch ID: ${originalBatchId}. New Batch ID: ${revertBatchId}`);
+    return NextResponse.json({ success: true, message: 'Batch reverted successfully', revertBatchId: revertBatchId, status: finalRevertStatus });
+
+  } catch (error: any) {
+    console.error("[API /api/revert-batch] An error occurred:", error);
+    // --- TODO: Rollback logic if using transactions ---
+    // If revert batch was created, try marking it as failed
+    // ... (similar error handling as in bulk-edit)
+    return NextResponse.json({ error: error.message || 'An internal server error occurred' }, { status: 500 });
+  }
+}
+</file>
+
+<file path="app/api/revert-log/[log_id]/route.ts">
+import { NextResponse } from 'next/server';
+import { supabase } from '@/utils/supabase/client';
+
+export async function POST(
+  request: Request,
+  { params }: { params: { log_id: string } }
+) {
+  const originalLogId = parseInt(params.log_id, 10);
+  console.log(`[API /api/revert-log] Received request for log ID: ${originalLogId}`);
+
+  if (isNaN(originalLogId)) {
+    return NextResponse.json({ error: 'Invalid Log ID format' }, { status: 400 });
+  }
+
+  // --- Authentication/Authorization (Skipped for Prototype) ---
+  const userId = null; // Placeholder
+
+  // --- TODO: Implement proper transaction handling in production ---
+
+  try {
+    // 1. Fetch the original log entry
+    const { data: originalLog, error: fetchLogError } = await supabase
+      .from('change_logs')
+      .select('id, batch_id, employee_id, attribute_name, old_value, new_value, reverted_log_id') // Check if already reverted
+      .eq('id', originalLogId)
+      .single();
+
+    if (fetchLogError) {
+      if (fetchLogError.code === 'PGRST116') { return NextResponse.json({ error: 'Original log not found' }, { status: 404 }); }
+      console.error('[API /api/revert-log] Error fetching original log:', fetchLogError);
+      throw new Error(`Failed to fetch original log: ${fetchLogError.message}`);
+    }
+
+    // Check if the log is already associated with a revert (prevent double reverts)
+    if (originalLog.reverted_log_id) {
+        // Optionally, check if any *other* log points to this one as being reverted
+        // const { count } = await supabase.from('change_logs').select('*', { count: 'exact' }).eq('reverted_log_id', originalLogId);
+        // if (count > 0) ...
+        return NextResponse.json({ error: 'This log change has already been reverted.' }, { status: 400 });
+    }
+    
+    // Check if the original batch was completed (optional but good practice)
+    const { data: originalBatch, error: fetchBatchError } = await supabase
+        .from('change_batches')
+        .select('status')
+        .eq('id', originalLog.batch_id)
+        .single();
+
+    if (fetchBatchError || !originalBatch) {
+        console.warn(`[API /api/revert-log] Could not verify original batch status for log ${originalLogId}`);
+        // Decide whether to proceed or return an error
+    }
+    // Allow reverting logs from Completed or CompletedWithErrors batches
+    // if (originalBatch && !['Completed', 'CompletedWithErrors'].includes(originalBatch.status)) {
+    //     return NextResponse.json({ error: `Original batch (${originalLog.batch_id}) was not completed.` }, { status: 400 });
+    // }
+
+    // 2. Create a new 'Revert' batch entry for this single action
+    const revertDescription = `Single Revert of Log #${originalLogId} (Batch #${originalLog.batch_id})`;
+    const { data: revertBatchData, error: revertBatchError } = await supabase
+      .from('change_batches')
+      .insert({
+        status: 'PendingRevert', // Start as pending
+        user_id: userId,
+        description: revertDescription,
+        // reverted_batch_id: null (This is not reverting a full batch)
+      })
+      .select('id')
+      .single();
+
+    if (revertBatchError || !revertBatchData) {
+      console.error('[API /api/revert-log] Error creating revert batch entry:', revertBatchError);
+      throw new Error(`Failed to create revert batch: ${revertBatchError?.message}`);
+    }
+    const revertBatchId = revertBatchData.id;
+    console.log(`[API /api/revert-log] Created revert batch with ID: ${revertBatchId}`);
+
+    // 3. Perform the single employee update (revert to old_value)
+    let valueToRevertTo: any = originalLog.old_value;
+    // Basic type guessing (same simplification as revert-batch)
+    if (originalLog.old_value !== null) {
+        if (!isNaN(Number(originalLog.old_value))) valueToRevertTo = Number(originalLog.old_value);
+        else if (originalLog.old_value.toLowerCase() === 'true') valueToRevertTo = true;
+        else if (originalLog.old_value.toLowerCase() === 'false') valueToRevertTo = false;
+    }
+
+    const updateData = { [originalLog.attribute_name]: valueToRevertTo };
+    console.log(`[API /api/revert-log] Reverting employee ${originalLog.employee_id}, attribute ${originalLog.attribute_name} to:`, valueToRevertTo);
+
+    const { error: updateError } = await supabase
+      .from('employees')
+      .update(updateData)
+      .eq('id', originalLog.employee_id);
+
+    let finalRevertStatus = 'Completed';
+    if (updateError) {
+      console.error('[API /api/revert-log] Error during revert update:', updateError);
+      finalRevertStatus = 'Failed'; // Mark revert as failed if DB update fails
+       // Don't insert log if update failed?
+    } else {
+       console.log('[API /api/revert-log] Revert update successful.');
+    }
+
+    // 4. Create the new change_logs entry for the revert action (even if update failed, to record attempt)
+    const revertLogEntry = {
+      batch_id: revertBatchId,
+      employee_id: originalLog.employee_id,
+      attribute_name: originalLog.attribute_name,
+      old_value: originalLog.new_value,
+      new_value: originalLog.old_value,
+      reverted_log_id: originalLog.id, // Link to the original log entry
+    };
+    console.log('[API /api/revert-log] Creating revert log entry:', revertLogEntry);
+    const { error: logInsertError } = await supabase.from('change_logs').insert(revertLogEntry);
+
+    if (logInsertError) {
+      console.error('[API /api/revert-log] Critical: Failed to insert revert log entry!', logInsertError);
+      finalRevertStatus = 'Failed'; // Mark as failed if log insert fails
+    }
+
+    // 5. Update the revert batch status
+    const { error: updateRevertBatchError } = await supabase
+      .from('change_batches')
+      .update({ status: finalRevertStatus, completed_at: new Date().toISOString() })
+      .eq('id', revertBatchId);
+
+    if (updateRevertBatchError) {
+      console.error('[API /api/revert-log] Error updating revert batch status:', updateRevertBatchError);
+      // Status might be inconsistent, but log the error.
+    }
+
+    // (Optional) 6. Mark the original log as reverted? Could add a boolean column `is_reverted` to change_logs.
+    // For simplicity now, we rely on checking `reverted_log_id` references.
+    // const { error: updateOriginalLogError } = await supabase
+    //   .from('change_logs')
+    //   .update({ is_reverted: true })
+    //   .eq('id', originalLogId);
+
+    if (finalRevertStatus === 'Failed') {
+        // If the process failed, throw an error to return 500
+        throw new Error('Failed to fully process log revert.');
+    }
+
+    console.log(`[API /api/revert-log] Successfully processed revert for log ID: ${originalLogId}. New Batch ID: ${revertBatchId}`);
+    return NextResponse.json({ success: true, message: 'Log reverted successfully', revertBatchId: revertBatchId });
+
+  } catch (error: any) {
+    console.error("[API /api/revert-log] An error occurred:", error);
+    // --- TODO: Rollback logic if using transactions ---
+    // If revert batch was created, try marking it as failed
+    // ... (similar error handling as in bulk-edit)
+    return NextResponse.json({ error: error.message || 'An internal server error occurred' }, { status: 500 });
+  }
+}
+</file>
+
+<file path="app/audit/page.tsx">
+'use client';
+
+import React, { useState, useEffect, useCallback } from 'react';
+import { supabase } from '@/utils/supabase/client';
+import { AlertCircle, CheckCircle, Clock, RefreshCw, XCircle, Info, X } from 'lucide-react';
+
+// Define types for our data (consider moving to a shared types file)
+type ChangeBatch = {
+  id: number;
+  created_at: string;
+  status: string; // Scheduled, Completed, Reverted, Cancelled, Failed, Pending, CompletedWithErrors, PendingRevert
+  scheduled_for: string | null;
+  completed_at: string | null;
+  user_id: string | null; // Assuming UUID
+  description: string | null;
+  reverted_batch_id: number | null;
+  // Potentially add user email/name if joining
+  // user_email?: string; 
+};
+
+type ChangeLog = {
+  id: number;
+  batch_id: number;
+  employee_id: string; // Assuming UUID
+  attribute_name: string;
+  old_value: string | null;
+  new_value: string | null;
+  created_at: string;
+  reverted_log_id: number | null;
+  employees?: { full_name: string | null } | null; // Added for joined data
+};
+
+// Helper function to format date/time (consider moving to a utils file)
+const formatDateTime = (isoString: string | null) => {
+  if (!isoString) return 'N/A';
+  try {
+    return new Date(isoString).toLocaleString(undefined, { 
+        dateStyle: 'medium', 
+        timeStyle: 'short' 
+    });
+  } catch (e) {
+    return 'Invalid Date';
+  }
+};
+
+// Helper component for status badges (consider moving to components folder)
+const StatusBadge: React.FC<{ status: string }> = ({ status }) => {
+    let colorClasses = 'bg-gray-100 text-gray-800';
+    let Icon = Info;
+
+    switch (status) {
+        case 'Scheduled': colorClasses = 'bg-blue-100 text-blue-800'; Icon = Clock; break;
+        case 'Completed': colorClasses = 'bg-green-100 text-green-800'; Icon = CheckCircle; break;
+        case 'CompletedWithErrors': colorClasses = 'bg-yellow-100 text-yellow-800'; Icon = AlertCircle; break;
+        case 'Reverted': colorClasses = 'bg-purple-100 text-purple-800'; Icon = RefreshCw; break;
+        case 'Cancelled': colorClasses = 'bg-gray-200 text-gray-600'; Icon = XCircle; break;
+        case 'Failed': colorClasses = 'bg-red-100 text-red-800'; Icon = XCircle; break;
+        // Add cases for Pending, PendingRevert if needed
+    }
+
+    return (
+        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${colorClasses}`}>
+            <Icon className="-ml-0.5 mr-1.5 h-3 w-3" />
+            {status}
+        </span>
+    );
+};
+
+export default function AuditPage() {
+  const [scheduledBatches, setScheduledBatches] = useState<ChangeBatch[]>([]);
+  const [completedBatches, setCompletedBatches] = useState<ChangeBatch[]>([]);
+  const [selectedBatchLogs, setSelectedBatchLogs] = useState<ChangeLog[]>([]);
+  const [isLoadingScheduled, setIsLoadingScheduled] = useState<boolean>(true);
+  const [isLoadingCompleted, setIsLoadingCompleted] = useState<boolean>(true);
+  const [isLoadingLogs, setIsLoadingLogs] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+  const [selectedBatchId, setSelectedBatchId] = useState<number | null>(null);
+  const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionSuccess, setActionSuccess] = useState<string | null>(null);
+
+  // Fetch Scheduled Batches
+  const fetchScheduledBatches = useCallback(async () => {
+    setIsLoadingScheduled(true);
+    setError(null);
+    try {
+      const { data, error: fetchError } = await supabase
+        .from('change_batches')
+        .select('*') // Select all columns for now
+        // .select('*, user:users(email)') // Example join for user email
+        .eq('status', 'Scheduled')
+        .order('scheduled_for', { ascending: true });
+
+      if (fetchError) throw fetchError;
+      setScheduledBatches(data || []);
+    } catch (err: any) {
+      console.error("Error fetching scheduled batches:", err);
+      setError(`Failed to load scheduled batches: ${err.message}`);
+      setScheduledBatches([]); // Clear data on error
+    } finally {
+      setIsLoadingScheduled(false);
+    }
+  }, []);
+
+  // Fetch Completed/Historical Batches
+  const fetchCompletedBatches = useCallback(async () => {
+    setIsLoadingCompleted(true);
+    setError(null);
+    try {
+      const { data, error: fetchError } = await supabase
+        .from('change_batches')
+        .select('*') 
+        // Filter out only states that are actively pending/scheduled
+        // 'Pending' should no longer exist, but excluding just in case.
+        // 'PendingRevert' is an intermediate state before revert completion.
+        .not('status', 'in', '("Scheduled","PendingRevert")') // Removed "Pending"
+        .order('created_at', { ascending: false }); 
+
+      if (fetchError) throw fetchError;
+      setCompletedBatches(data || []);
+    } catch (err: any) {
+      console.error("Error fetching completed batches:", err);
+      setError(`Failed to load completed batches: ${err.message}`); // Keep generic error
+      setCompletedBatches([]); 
+    } finally {
+      setIsLoadingCompleted(false);
+    }
+  }, []);
+
+  // Fetch logs for a specific batch
+  const fetchBatchLogs = useCallback(async (batchId: number) => {
+    if (!batchId) return;
+    setIsLoadingLogs(true);
+    setSelectedBatchLogs([]);
+    // Clear previous specific errors when fetching new logs
+    setError(null); 
+    setActionError(null); 
+    setActionSuccess(null);
+    try {
+      // Update select query to join with employees table
+      const { data, error: fetchError } = await supabase
+        .from('change_logs')
+        .select('*, employees (full_name)') // Fetch log data and employee name
+        .eq('batch_id', batchId)
+        .order('created_at', { ascending: true });
+
+      if (fetchError) throw fetchError;
+      setSelectedBatchLogs(data || []);
+    } catch (err: any) {
+      console.error(`Error fetching logs for batch ${batchId}:`, err);
+      // Set error specific to log fetching for display inside the modal
+      setError(`Failed to load logs for batch ${batchId}: ${err.message}`);
+      setSelectedBatchLogs([]);
+    } finally {
+      setIsLoadingLogs(false);
+    }
+  }, []);
+
+  // Initial data fetch on mount
+  useEffect(() => {
+    fetchScheduledBatches();
+    fetchCompletedBatches();
+  }, [fetchScheduledBatches, fetchCompletedBatches]);
+
+  // Handler to open details modal
+  const handleViewDetails = (batchId: number) => {
+    setSelectedBatchId(batchId);
+    setActionError(null);
+    setActionSuccess(null);
+    fetchBatchLogs(batchId);
+    setIsModalOpen(true);
+  };
+
+  // Handler to close modal
+  const handleCloseModal = () => {
+    setIsModalOpen(false);
+    setSelectedBatchId(null);
+    setSelectedBatchLogs([]);
+    setError(null);
+    setActionError(null);
+    setActionSuccess(null);
+  };
+
+  // --- Action Handlers (Implement API Calls) ---
+  const handleCancelBatch = async (batchId: number) => {
+    if (!confirm(`Are you sure you want to cancel scheduled batch #${batchId}?`)) {
+      return;
+    }
+    console.log("Cancelling Batch", batchId);
+    setIsSubmitting(true);
+    setActionError(null);
+    setActionSuccess(null);
+    try {
+      const response = await fetch(`/api/cancel-batch/${batchId}`, {
+        method: 'POST',
+      });
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || 'Failed to cancel batch');
+      }
+
+      setActionSuccess(`Batch #${batchId} cancelled successfully.`);
+      await fetchScheduledBatches();
+      await fetchCompletedBatches();
+
+    } catch (err: any) {
+      console.error("Error cancelling batch:", err);
+      setActionError(`Error cancelling batch #${batchId}: ${err.message}`);
+      alert(`Error cancelling batch #${batchId}: ${err.message}`);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleRevertBatch = async (batchId: number) => {
+    if (!confirm(`Are you sure you want to revert all changes from batch #${batchId}? This will create a new batch record for the revert action.`)) {
+      return;
+    }
+    console.log("Reverting Batch", batchId);
+    setIsSubmitting(true);
+    setActionError(null);
+    setActionSuccess(null);
+    try {
+      const response = await fetch(`/api/revert-batch/${batchId}`, {
+        method: 'POST',
+      });
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || 'Failed to revert batch');
+      }
+
+      setActionSuccess(`Batch #${batchId} reverted successfully. Revert recorded in new batch #${result.revertBatchId}.`);
+      alert(`Batch #${batchId} reverted successfully. Revert recorded in new batch #${result.revertBatchId}.`);
+      await fetchCompletedBatches();
+
+    } catch (err: any) {
+      console.error("Error reverting batch:", err);
+      setActionError(`Error reverting batch #${batchId}: ${err.message}`);
+      alert(`Error reverting batch #${batchId}: ${err.message}`);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleRevertLog = async (logId: number) => {
+    if (!confirm(`Are you sure you want to revert the single change from log #${logId}? This will create a new batch record for the revert action.`)) {
+      return;
+    }
+    console.log("Reverting Log", logId);
+    setIsSubmitting(true);
+    setActionError(null);
+    setActionSuccess(null);
+    try {
+      const response = await fetch(`/api/revert-log/${logId}`, {
+        method: 'POST',
+      });
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || 'Failed to revert log');
+      }
+
+      setActionSuccess(`Log #${logId} reverted successfully. Revert recorded in new batch #${result.revertBatchId}.`);
+      alert(`Log #${logId} reverted successfully. Revert recorded in new batch #${result.revertBatchId}.`);
+      if (selectedBatchId) {
+        await fetchBatchLogs(selectedBatchId); 
+      }
+      await fetchCompletedBatches();
+
+    } catch (err: any) {
+      console.error("Error reverting log:", err);
+      setActionError(`Error reverting log #${logId}: ${err.message}`);
+      alert(`Error reverting log #${logId}: ${err.message}`);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  // --- Render Logic ---
+  return (
+    <div className="bg-gray-50 min-h-screen">
+      <div className="max-w-7xl mx-auto">
+        <h1 className="text-2xl font-bold text-gray-800 mb-8 px-6 pt-6">
+          Bulk Change Audit
+        </h1>
+
+        {/* General Fetch Error Display */} 
+        {error && (
+          <div className="mb-4 p-4 bg-red-100 border border-red-400 text-red-700 rounded flex items-center mx-6">
+            <AlertCircle className="h-5 w-5 mr-2"/> 
+            <span>{error}</span>
+          </div>
+        )}
+        {/* Action Success/Error Display (General Page Level) */} 
+        {actionSuccess && !isModalOpen && (
+              <div className="mb-4 p-4 bg-green-100 border border-green-400 text-green-700 rounded flex items-center mx-6">
+                  <CheckCircle className="h-5 w-5 mr-2"/> 
+                  <span>{actionSuccess}</span>
+              </div>
+        )}
+        {actionError && !isModalOpen && (
+              <div className="mb-4 p-4 bg-red-100 border border-red-400 text-red-700 rounded flex items-center mx-6">
+                  <AlertCircle className="h-5 w-5 mr-2"/> 
+                  <span>{actionError}</span>
+              </div>
+        )}
+
+        {/* Scheduled Changes Section */} 
+        <section className="mb-8 px-6">
+          <h2 className="text-xl font-semibold mb-4 flex items-center justify-between">
+            <div className="flex items-center">
+              <Clock className="h-5 w-5 mr-2 text-blue-600"/>
+              Scheduled Changes
+            </div>
+            <button 
+              onClick={fetchScheduledBatches} 
+              disabled={isLoadingScheduled}
+              className="p-1 text-gray-400 hover:text-gray-600 disabled:opacity-50 disabled:cursor-wait"
+              title="Refresh Scheduled"
+            >
+              <RefreshCw className={`h-4 w-4 ${isLoadingScheduled ? 'animate-spin' : ''}`} />
+            </button>
+          </h2>
+          {isLoadingScheduled ? (
+            <p className="text-center text-gray-500 italic">Loading scheduled changes...</p>
+          ) : scheduledBatches.length === 0 ? (
+            <p className="text-center text-gray-500 italic">No changes currently scheduled.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[600px] bg-white rounded-lg border shadow">
+                <thead>
+                  <tr className="border-b bg-gray-50">
+                    <th className="text-left p-3 px-4 font-medium text-gray-600 text-sm">Batch ID</th>
+                    <th className="text-left p-3 px-4 font-medium text-gray-600 text-sm">Status</th>
+                    <th className="text-left p-3 px-4 font-medium text-gray-600 text-sm">Description</th>
+                    <th className="text-left p-3 px-4 font-medium text-gray-600 text-sm">Scheduled For</th>
+                    <th className="text-left p-3 px-4 font-medium text-gray-600 text-sm">Initiated At</th>
+                    <th className="text-left p-3 px-4 font-medium text-gray-600 text-sm">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-200">
+                  {scheduledBatches.map((batch) => (
+                    <tr key={batch.id} className="hover:bg-gray-50">
+                      <td className="p-3 px-4 text-sm text-gray-500">{batch.id}</td>
+                      <td className="p-3 px-4 text-sm"><StatusBadge status="Scheduled" /></td>
+                      <td className="p-3 px-4 text-sm text-gray-700">{batch.description || 'N/A'}</td>
+                      <td className="p-3 px-4 text-sm text-gray-700">{formatDateTime(batch.scheduled_for)}</td>
+                      <td className="p-3 px-4 text-sm text-gray-500">{formatDateTime(batch.created_at)}</td>
+                      <td className="p-3 px-4 text-sm space-x-3">
+                        <button 
+                          onClick={() => handleViewDetails(batch.id)}
+                          className="text-blue-600 hover:text-blue-800 hover:underline font-medium"
+                          disabled={isSubmitting}
+                        >
+                          Details
+                        </button>
+                        <button 
+                          onClick={() => handleCancelBatch(batch.id)} 
+                          disabled={isSubmitting}
+                          className="text-red-600 hover:text-red-800 hover:underline disabled:opacity-50 disabled:cursor-not-allowed font-medium"
+                        >
+                          Cancel
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+
+        {/* Completed History Section */} 
+        <section className="px-6 pb-6">
+          <h2 className="text-xl font-semibold mb-4 flex items-center justify-between">
+            <div className="flex items-center">
+              <CheckCircle className="h-5 w-5 mr-2 text-green-600"/>
+              Completed / History
+            </div>
+            <button 
+              onClick={fetchCompletedBatches} 
+              disabled={isLoadingCompleted}
+              className="p-1 text-gray-400 hover:text-gray-600 disabled:opacity-50 disabled:cursor-wait"
+              title="Refresh History"
+            >
+              <RefreshCw className={`h-4 w-4 ${isLoadingCompleted ? 'animate-spin' : ''}`} />
+            </button>
+          </h2>
+          {isLoadingCompleted ? (
+            <p className="text-center text-gray-500 italic">Loading history...</p>
+          ) : completedBatches.length === 0 ? (
+            <p className="text-center text-gray-500 italic">No completed changes found.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[800px] bg-white rounded-lg border shadow">
+                <thead>
+                  <tr className="border-b bg-gray-50">
+                    <th className="text-left p-3 px-4 font-medium text-gray-600 text-sm">Batch ID</th>
+                    <th className="text-left p-3 px-4 font-medium text-gray-600 text-sm">Status</th>
+                    <th className="text-left p-3 px-4 font-medium text-gray-600 text-sm">Description</th>
+                    <th className="text-left p-3 px-4 font-medium text-gray-600 text-sm">Completed At</th>
+                    <th className="text-left p-3 px-4 font-medium text-gray-600 text-sm">Initiated At</th>
+                    <th className="text-left p-3 px-4 font-medium text-gray-600 text-sm">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-200">
+                  {completedBatches.map((batch) => (
+                    <tr key={batch.id} className={`hover:bg-gray-50 ${batch.status === 'Reverted' || batch.reverted_batch_id ? 'opacity-70' : ''}`}>
+                      <td className="p-3 px-4 text-sm text-gray-500">{batch.id}</td>
+                      <td className="p-3 px-4 text-sm"><StatusBadge status={batch.status} /></td>
+                      <td className="p-3 px-4 text-sm text-gray-700">{batch.description || 'N/A'}</td>
+                      <td className="p-3 px-4 text-sm text-gray-500">{formatDateTime(batch.completed_at)}</td>
+                      <td className="p-3 px-4 text-sm text-gray-500">{formatDateTime(batch.created_at)}</td>
+                      <td className="p-3 px-4 text-sm space-x-3">
+                        <button 
+                          onClick={() => handleViewDetails(batch.id)} 
+                          className="text-blue-600 hover:text-blue-800 hover:underline font-medium"
+                        >
+                          Details
+                        </button>
+                        {batch.status === 'Completed' && !batch.reverted_batch_id && (
+                          <button 
+                            onClick={() => handleRevertBatch(batch.id)} 
+                            disabled={isSubmitting}
+                            className="text-red-600 hover:text-red-800 hover:underline disabled:opacity-50 disabled:cursor-not-allowed font-medium"
+                          >
+                            Revert Batch
+                          </button>
+                        )}
+                        {batch.status === 'Reverted' && (
+                          <span className="text-xs text-purple-600 italic">(Reverted by Batch #{batch.reverted_batch_id})</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+
+        {/* Details Modal */} 
+        {isModalOpen && selectedBatchId && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 transition-opacity duration-300">
+            <div className="bg-white rounded-lg shadow-xl w-full max-w-5xl max-h-[80vh] flex flex-col transform transition-all duration-300 scale-100 opacity-100">
+                {/* Modal Header */}
+                <div className="flex justify-between items-center p-4 border-b border-gray-200 sticky top-0 bg-white z-20"> {/* Increased z-index */} 
+                  <h2 className="text-lg font-semibold text-gray-800">Details for Batch #{selectedBatchId}</h2>
+                  <button onClick={handleCloseModal} className="text-gray-400 hover:text-gray-600 p-1 rounded-full hover:bg-gray-100">
+                    <X className="h-5 w-5" />
+                  </button>
+                </div>
+
+                {/* Modal-specific Action Feedback */} 
+                {actionError && <div className="m-3 p-3 bg-red-100 border border-red-400 text-red-700 rounded text-sm flex items-center"><AlertCircle className="h-4 w-4 mr-2"/> {actionError}</div>}
+                {actionSuccess && <div className="m-3 p-3 bg-green-100 border border-green-400 text-green-700 rounded text-sm flex items-center"><CheckCircle className="h-4 w-4 mr-2"/>{actionSuccess}</div>}
+                {/* Display log fetch error inside modal */}
+                {error && <div className="m-3 p-3 bg-yellow-100 border border-yellow-400 text-yellow-800 rounded text-sm flex items-center"><AlertCircle className="h-4 w-4 mr-2"/>{error}</div>}
+
+                {/* Modal Body - Scrollable Log Table */}
+                <div className="p-4 overflow-y-auto flex-grow">
+                  {isLoadingLogs ? (
+                    <p className="text-center text-gray-500 italic">Loading logs...</p>
+                  ) : selectedBatchLogs.length === 0 && !error ? ( // Show only if no logs AND no error
+                    <p className="text-center text-gray-500 italic">No individual changes found for this batch.</p>
+                  ) : !error ? ( // Only render table if no log fetch error
+                    <div className="overflow-x-auto"> {/* Added wrapper for horizontal scroll */}
+                      <table className="w-full min-w-[900px] border-collapse"> {/* Added min-width */} 
+                        <thead className="sticky top-0 bg-gray-50 z-10"> {/* Ensure header is sticky within scrollable area */} 
+                          <tr className="border-b">
+                            <th className="text-left p-3 font-medium text-gray-600 text-sm">Log ID</th>
+                            <th className="text-left p-3 font-medium text-gray-600 text-sm">Employee ID</th>
+                            <th className="text-left p-3 font-medium text-gray-600 text-sm">Employee Name</th> {/* Added Name Header */}
+                            <th className="text-left p-3 font-medium text-gray-600 text-sm">Attribute</th>
+                            <th className="text-left p-3 font-medium text-gray-600 text-sm">Old Value</th>
+                            <th className="text-left p-3 font-medium text-gray-600 text-sm">New Value</th>
+                            <th className="text-left p-3 font-medium text-gray-600 text-sm">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-200">
+                          {selectedBatchLogs.map((log) => (
+                            <tr key={log.id} className={`hover:bg-gray-50 ${log.reverted_log_id ? 'opacity-50 bg-gray-100' : ''}`}>
+                              <td className="p-3 text-sm text-gray-500">{log.id}</td>
+                              <td className="p-3 text-sm text-gray-500 font-mono text-xs">{log.employee_id}</td>
+                              <td className="p-3 text-sm text-gray-700">{log.employees?.full_name ?? <i className="text-gray-400">N/A</i>}</td> {/* Added Name Cell + N/A handling */} 
+                              <td className="p-3 text-sm text-gray-700">{getAttributeLabel(log.attribute_name)}</td>
+                              <td className="p-3 text-sm text-gray-500 break-all">{log.old_value ?? <i className="text-gray-400">Empty</i>}</td> {/* Added break-all */}
+                              <td className="p-3 text-sm text-gray-500 break-all">{log.new_value ?? <i className="text-gray-400">Empty</i>}</td> {/* Added break-all */}
+                              <td className="p-3 text-sm text-gray-500 whitespace-nowrap"> {/* Prevent wrap on action button */}
+                                  {log.reverted_log_id ? (
+                                      <span className="text-xs text-purple-600 italic">Reverted (Log ID: {log.reverted_log_id})</span>
+                                  ) : (
+                                      <button 
+                                          onClick={() => handleRevertLog(log.id)} 
+                                          disabled={isSubmitting}
+                                          className="text-xs text-red-600 hover:text-red-800 hover:underline disabled:opacity-50 disabled:cursor-not-allowed font-medium"
+                                      >
+                                          Revert {/* Changed from Revert Log */}
+                                      </button>
+                                  )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : null /* Don't render table if there was an error fetching logs */} 
+                </div>
+
+                {/* Modal Footer */} 
+                <div className="p-4 border-t border-gray-200 bg-gray-50 flex justify-end sticky bottom-0 z-10">
+                  <button
+                    onClick={handleCloseModal}
+                    className="px-4 py-2 bg-white border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+                  >
+                    Close
+                  </button>
+                </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Helper to get attribute label (needs to be defined or imported if not already)
+// Keep the existing helper function definition
+function getAttributeLabel(attributeId: string): string {
+    const labels: Record<string, string> = {
+        work_email: 'Work Email',
+        department: 'Department',
+        job_title: 'Job Title',
+        base_salary: 'Base Salary',
+        // Add other mappings as needed
+    };
+    return labels[attributeId] || attributeId; // Return ID if no label found
+}
+</file>
+
+<file path="app/layout.tsx">
+import type { Metadata } from "next";
+import { Inter } from "next/font/google";
+import Link from 'next/link';
+import { Users, History, Search, HelpCircle, Settings as SettingsIcon, Bell } from 'lucide-react'; // Added icons
+import "../src/index.css"; // Import global styles from src
+
+const inter = Inter({ subsets: ["latin"] });
+
+export const metadata: Metadata = {
+  title: "Rippling Bulk Edit Mockup", // Updated title
+  description: "A mockup demonstrating bulk edit features with audit trail.", // Updated description
+};
+
+export default function RootLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
+  const sidebarWidthClass = 'w-20';
+  const topBarHeightClass = 'h-16';
+
+  return (
+    <html lang="en">
+      <body className={`${inter.className} bg-gray-100`} suppressHydrationWarning={true}>
+        <div className="flex h-screen">
+          {/* Sidebar - Fixed top-0, full height */}
+          <aside className={`${sidebarWidthClass} fixed top-0 left-0 h-screen bg-white border-r border-gray-200 flex flex-col items-center py-4 space-y-6 z-20`}>
+            {/* Add top padding to push nav down below the header area */} 
+            <div className={`${topBarHeightClass} flex-shrink-0`}></div> {/* Spacer div */} 
+            <nav className="flex flex-col space-y-4 items-center flex-grow">
+               {/* Employees Link */}
+              <Link href="/" className="p-2 rounded-lg text-gray-600 hover:bg-gray-100 hover:text-gray-900 group flex flex-col items-center" title="Employees">
+                 <Users className="h-6 w-6" />
+                 <span className="text-xs mt-1 group-hover:font-medium">People</span> 
+              </Link>
+              
+               {/* Audit Link */}
+              <Link href="/audit" className="p-2 rounded-lg text-gray-600 hover:bg-gray-100 hover:text-gray-900 group flex flex-col items-center" title="Audit Log">
+                 <History className="h-6 w-6" />
+                  <span className="text-xs mt-1 group-hover:font-medium">Audit</span> 
+              </Link>
+              
+              {/* Add more placeholder icons if needed */} 
+            </nav>
+            
+            {/* Bottom Icons stick to bottom */} 
+            <div className="flex flex-col space-y-4 items-center pb-4 flex-shrink-0"> 
+                {/* Placeholder Bottom Icons */}
+                <button className="p-2 rounded-lg text-gray-600 hover:bg-gray-100 hover:text-gray-900" title="Placeholder Action">
+                    <Bell className="h-6 w-6" />
+                </button>
+                <button className="p-2 rounded-lg text-gray-600 hover:bg-gray-100 hover:text-gray-900" title="Placeholder Settings">
+                    <SettingsIcon className="h-6 w-6" />
+                </button>
+            </div>
+          </aside>
+
+          {/* Container for Top Bar and Main Content (offset left by sidebar) */} 
+          <div className={`flex-1 flex flex-col ml-20`}> {/* Use explicit ml-20 */} 
+            {/* Top Bar - Fixed within its container, starts after sidebar */}
+            <header className={`${topBarHeightClass} fixed top-0 left-20 right-0 bg-[#55002A] text-white flex items-center justify-between px-6 shadow z-10`}> {/* Use explicit left-20 */} 
+               {/* Left side - Search Placeholder */}
+                <div className="relative flex-shrink-0">
+                    <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-4 w-4" />
+                    <input
+                        type="text"
+                        placeholder="Search for people or apps"
+                        className="pl-10 pr-4 py-2 bg-[#7E2A51] text-white placeholder-gray-300 rounded-lg w-64 focus:outline-none focus:ring-2 focus:ring-white/50 focus:bg-[#681A3E]" 
+                    />
+                </div>
+                
+                {/* Right side - Icons & User Info Placeholder */}
+                <div className="flex items-center space-x-4">
+                    <button className="text-gray-300 hover:text-white flex items-center text-sm">
+                        SUPPORT
+                    </button>
+                    <button className="text-gray-300 hover:text-white">
+                        <HelpCircle className="h-5 w-5" />
+                    </button>
+                    <button className="text-gray-300 hover:text-white">
+                        <SettingsIcon className="h-5 w-5" />
+                    </button>
+                    {/* User Info Placeholder */}
+                    <div className="flex items-center space-x-2 cursor-pointer border-l border-white/20 pl-4">
+                       <div className="w-8 h-8 rounded-full bg-pink-200 text-pink-800 flex items-center justify-center text-sm font-semibold">LP</div>
+                       <div>
+                         <div className="text-sm font-medium">Luke Prokopiak</div>
+                         <div className="text-xs text-gray-300">Admin</div>
+                       </div>
+                       {/* Dropdown Arrow Placeholder */}
+                       <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4 text-gray-300">
+                         <path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
+                       </svg>
+                    </div>
+                </div>
+            </header>
+
+            {/* Main Content Area - Offset top for the header */} 
+            <main className={`flex-1 overflow-y-auto bg-white mt-16`}> {/* Use explicit mt-16 */} 
+               <div> 
+                 {children}
+               </div>
+            </main>
+          </div>
+        </div>
+      </body>
+    </html>
+  );
+}
+</file>
+
+<file path="app/page.tsx">
+'use client'; // Mark this as a Client Component
+
+import React from 'react';
+// Remove import for the old Sidebar component
+// import { Sidebar } from '@/components/Sidebar';
+import { PeopleList } from '@/components/PeopleList';
+
+export default function HomePage() {
+  return (
+    // Remove the outer flex container and the old Sidebar rendering
+    // The layout now handles the main structure
+    // <div className="flex w-full min-h-screen bg-gray-100">
+    //   <Sidebar /> 
+    //   <div className="flex-1">
+        <PeopleList /> 
+    //   </div>
+    // </div>
+  );
+}
+</file>
+
+<file path="src/components/AttributeSelector.tsx">
+import React from 'react';
+import { sharedAvailableAttributes, Attribute } from '@/config/attributes.ts'; // Import from new file
+
+// --- Common Attributes based on Supabase Schema ---
+// Define in a shared location ideally (e.g., src/config/attributes.ts)
+// const sharedAvailableAttributes = [
+//   // { id: 'employee_id', label: 'Employee ID' }, // Usually unique, less common to display by default
+//   // { id: 'full_name', label: 'Full Name' }, // Handled separately in the first column
+//   { id: 'preferred_name', label: 'Preferred Name' },
+//   { id: 'work_email', label: 'Work Email' },
+//   // { id: 'personal_email', label: 'Personal Email' }, // Example if you add it
+//   // { id: 'phone_number', label: 'Phone' }, // Example if you add it
+//   { id: 'job_title', label: 'Job Title' },
+//   { id: 'department', label: 'Department' },
+//   { id: 'team', label: 'Team' },
+//   { id: 'manager_id', label: 'Manager ID' }, // Consider displaying name via join later
+//   { id: 'job_level', label: 'Job Level' },
+//   { id: 'employment_type', label: 'Employment Type' },
+//   { id: 'work_location', label: 'Work Location' },
+//   { id: 'work_country', label: 'Work Country' },
+//   { id: 'time_zone', label: 'Time Zone' },
+//   { id: 'legal_entity', label: 'Legal Entity' },
+//   // { id: 'start_date', label: 'Start Date' }, // Example if you add it
+//   // { id: 'end_date', label: 'End Date' }, // Example if you add it
+//   { id: 'base_salary', label: 'Base Salary' }, // Sensitive - consider RLS/permissions
+//   { id: 'compensation_currency', label: 'Currency' },
+//   { id: 'equity_shares', label: 'Equity Shares' }, // Sensitive
+//   { id: 'target_annual_bonus_percentage', label: 'Target Bonus %' }, // Sensitive
+//   { id: 'on_target_earnings', label: 'OTE' }, // Sensitive
+//   { id: 'compensation_effective_date', label: 'Comp Effective Date' },
+// ];
+// Filter out attributes handled specially (like full_name) or ones not suitable for simple selection
+const availableAttributesForSelector = sharedAvailableAttributes.filter(attr => !['id', 'created_at', 'full_name'].includes(attr.id));
+// --- End Common Attributes ---
+
+// Prop types (Simple for now, enhance if needed)
+interface AttributeSelectorProps {
+  selectedAttributes: string[];
+  onChange: (selected: string[]) => void;
+}
+
+export const AttributeSelector: React.FC<AttributeSelectorProps> = ({
+  selectedAttributes,
+  onChange
+}) => {
+  const handleToggle = (attributeId: string) => {
+    const newSelection = selectedAttributes.includes(attributeId)
+      ? selectedAttributes.filter(id => id !== attributeId)
+      : [...selectedAttributes, attributeId];
+    onChange(newSelection);
+  };
+
+  return <div className="space-y-4">
+      <p className="text-gray-600">
+        Select the attributes you would like to show in the table
+      </p>
+      <div className="grid grid-cols-2 gap-4">
+        {/* Use the filtered list for the selector */}
+        {availableAttributesForSelector.map(attribute => <div key={attribute.id} className="flex items-center space-x-3 p-3 border rounded-lg hover:bg-gray-50">
+            <input
+              type="checkbox"
+              id={attribute.id}
+              checked={selectedAttributes.includes(attribute.id)}
+              onChange={() => handleToggle(attribute.id)}
+              className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+            />
+            <label htmlFor={attribute.id} className="font-medium">
+              {attribute.label}
+            </label>
+          </div>)}
+      </div>
+    </div>;
+};
+</file>
+
+<file path="src/components/BulkInputScreen.tsx">
+import React, { useState } from 'react';
+// Import from the new config file
+import { sharedAvailableAttributes, getAttributeLabel, Attribute } from '@/config/attributes.ts'; 
+
+// Define the structure for an attribute (duplicate for now, move later)
+// interface Attribute { ... }
+
+// Define structure for Employee (can be imported if moved to shared types)
+type Employee = {
+  id: string;
+  full_name?: string;
+  [key: string]: any;
+};
+
+// Define the type for the changes record
+type ChangeRecord = Record<string, Record<string, any>>;
+
+// Props for the BulkInputScreen
+interface BulkInputScreenProps {
+  employees: Employee[]; // Array of selected employee objects
+  attributes: string[]; // Array of attribute IDs to edit
+  initialChanges?: ChangeRecord; // Make initial changes optional
+  onPreview: (changes: ChangeRecord) => void;
+  onCancel: () => void;
+}
+
+// Helper to get label from ID (could be imported)
+// const getAttributeLabel = (id: string): string => { ... };
+
+export const BulkInputScreen: React.FC<BulkInputScreenProps> = ({
+  employees,
+  attributes,
+  initialChanges, // Receive initial changes
+  onPreview,
+  onCancel,
+}) => {
+  // Initialize state with initialChanges if provided, otherwise empty object
+  const [changes, setChanges] = useState<ChangeRecord>(initialChanges || {});
+
+  // Handle input changes and update the state
+  const handleInputChange = (
+    employeeId: string,
+    attributeId: string,
+    value: any
+  ) => {
+    setChanges((prevChanges) => ({
+      ...prevChanges,
+      [employeeId]: {
+        ...prevChanges[employeeId],
+        [attributeId]: value,
+      },
+    }));
+  };
+
+  // Handle clicking the preview button
+  const handlePreviewClick = () => {
+    // Filter out empty changes before previewing (optional)
+    const finalChanges: ChangeRecord = {};
+    Object.entries(changes).forEach(([empId, attrs]) => {
+      const empChanges: Record<string, any> = {};
+      Object.entries(attrs).forEach(([attrId, value]) => {
+        // Only include if value is not empty or significantly different from original?
+        // For now, include all entered values.
+        if (value !== undefined && value !== null && value !== '') {
+             empChanges[attrId] = value;
+        }
+      });
+      if (Object.keys(empChanges).length > 0) {
+         finalChanges[empId] = empChanges;
+      }
+    });
+    onPreview(finalChanges);
+  };
+
+  return (
+    <div className="bg-gray-50 min-h-screen">
+      <div className="max-w-7xl mx-auto">
+        <div className="flex justify-between items-center mb-6 px-6 pt-6">
+          <h1 className="text-2xl font-bold text-gray-800">Bulk Edit Input</h1>
+          <div className="space-x-3">
+            <button
+              onClick={onCancel}
+              className="px-4 py-2 bg-white border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handlePreviewClick}
+              className="px-4 py-2 bg-blue-600 border border-transparent rounded-md shadow-sm text-sm font-medium text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+            >
+              Preview Changes
+            </button>
+          </div>
+        </div>
+
+        <p className="mb-4 text-sm text-gray-600 px-6">
+          Editing {attributes.length} attribute(s) for {employees.length} employee(s).
+          Enter new values below. Leave fields blank to keep the original value.
+        </p>
+
+        <div className="overflow-x-auto px-6 pb-6">
+          <table className="w-full min-w-[800px] table-fixed bg-white rounded-lg border shadow">
+            <thead className="bg-gray-50">
+              <tr className="border-b">
+                {/* Make Employee column slightly wider and ensure it's sticky */}
+                <th className="text-left p-3 px-4 font-semibold text-gray-600 sticky left-0 bg-gray-50 z-10 w-60">Employee</th> 
+                {attributes.map(attrId => (
+                  <React.Fragment key={attrId}>
+                    {/* Apply fixed width to header cells */}
+                    <th className="text-left p-3 px-4 font-semibold text-gray-600 border-l w-52">Current {getAttributeLabel(attrId)}</th>
+                    <th className="text-left p-3 px-4 font-semibold text-gray-600 border-l w-52">New {getAttributeLabel(attrId)}</th>
+                  </React.Fragment>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-200">
+              {employees.map((employee) => (
+                <tr key={employee.id} className="hover:bg-gray-50">
+                  {/* Ensure employee cell matches header width and is sticky */}
+                  <td className="p-3 px-4 sticky left-0 bg-white hover:bg-gray-50 z-10 w-60 align-middle">
+                    <div>
+                      <div className="font-medium text-gray-900">{employee.full_name ?? 'N/A'}</div>
+                      <div className="text-xs text-gray-500">ID: {employee.id}</div>
+                    </div>
+                  </td>
+                  {attributes.map(attrId => (
+                    <React.Fragment key={`${employee.id}-${attrId}`}>
+                      {/* Current Value Cell - Apply fixed width */}
+                      <td className="p-3 px-4 text-sm text-gray-600 border-l w-52 align-middle break-words">
+                        {employee[attrId] !== null && employee[attrId] !== undefined ? String(employee[attrId]) : <span className="text-gray-400 italic">Empty</span>}
+                      </td>
+                      {/* New Value Input Cell - Apply fixed width */}
+                      <td className="p-2 px-3 border-l w-52 align-middle">
+                        {/* TODO: Add specific input types based on attrId (date, select, number) */}
+                        <input
+                          type="text" // Default to text for now
+                          placeholder="Enter new value..."
+                          value={changes[employee.id]?.[attrId] ?? ''}
+                          onChange={(e) => handleInputChange(employee.id, attrId, e.target.value)}
+                          className="w-full px-2 py-1 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                        />
+                      </td>
+                    </React.Fragment>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div> 
+      </div> 
+    </div>
+  );
+};
+</file>
+
+<file path="src/components/EditAttributeModal.tsx">
+import React, { useState, useMemo, useEffect } from 'react';
+import { X, Search } from 'lucide-react';
+import { Attribute } from '@/config/attributes'; // Ensure correct import path
+
+// Define the structure for an attribute - REMOVED
+// interface Attribute {
+//   id: string;
+//   label: string;
+// }
+
+// Define the props for the modal
+interface EditAttributeModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  onConfirm: (selectedAttributes: string[]) => void;
+  initialSelectedAttributes: string[]; // Attributes currently shown in the table
+  allAvailableAttributes: Attribute[]; // Use imported Attribute type
+}
+
+export const EditAttributeModal: React.FC<EditAttributeModalProps> = ({
+  isOpen,
+  onClose,
+  onConfirm,
+  initialSelectedAttributes,
+  allAvailableAttributes,
+}) => {
+  // State for the attributes selected *within this modal*
+  const [selectedEditAttributes, setSelectedEditAttributes] = useState<string[]>([]);
+  
+  // State for the search term within the modal
+  const [searchTerm, setSearchTerm] = useState('');
+
+  // Effect to reset state when modal opens with the current initial attributes
+  useEffect(() => {
+    if (isOpen) {
+      // Reset the selection to match the currently passed initial attributes
+      setSelectedEditAttributes([...initialSelectedAttributes]);
+      // Reset search term when opening
+      setSearchTerm('');
+    }
+  }, [isOpen, initialSelectedAttributes]);
+
+  // Filter and sort attributes based on search term and selection
+  const filteredAndSortedAttributes = useMemo(() => {
+    const lowerCaseSearchTerm = searchTerm.toLowerCase();
+    const filtered = allAvailableAttributes.filter(
+      (attr) =>
+        !searchTerm || // Include all if search is empty
+        attr.label.toLowerCase().includes(lowerCaseSearchTerm) ||
+        attr.id.toLowerCase().includes(lowerCaseSearchTerm)
+    );
+
+    // Sort: selected first, then alphabetically
+    return filtered.sort((a, b) => {
+      const aIsSelected = selectedEditAttributes.includes(a.id);
+      const bIsSelected = selectedEditAttributes.includes(b.id);
+
+      if (aIsSelected && !bIsSelected) return -1; // a comes first
+      if (!aIsSelected && bIsSelected) return 1; // b comes first
+
+      // If both are selected or both are not selected, sort alphabetically by label
+      return a.label.localeCompare(b.label);
+    });
+  }, [allAvailableAttributes, searchTerm, selectedEditAttributes]); // Dependencies
+
+  // Handle toggling checkbox selection
+  const handleToggle = (attributeId: string) => {
+    setSelectedEditAttributes((prevSelected) => {
+      if (prevSelected.includes(attributeId)) {
+        return prevSelected.filter((id) => id !== attributeId);
+      } else {
+        return [...prevSelected, attributeId];
+      }
+    });
+  };
+
+  // Handle confirm button click
+  const handleConfirmClick = () => {
+    onConfirm(selectedEditAttributes);
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 transition-opacity duration-300">
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-lg mx-4 max-h-[80vh] flex flex-col transform transition-all duration-300 scale-100 opacity-100">
+        {/* Modal Header */}
+        <div className="flex justify-between items-center p-4 border-b border-gray-200 sticky top-0 bg-white z-10">
+          <h2 className="text-lg font-medium text-gray-800">Select Attributes to Edit</h2>
+          <button
+            onClick={onClose}
+            className="text-gray-400 hover:text-gray-600 p-1 rounded-full hover:bg-gray-100"
+            aria-label="Close modal"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        {/* Search Input */}
+        <div className="p-4 border-b border-gray-200 sticky top-[65px] bg-white z-10"> {/* Ensure sticky positioning */}
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-4 w-4" />
+            <input
+              type="text"
+              placeholder="Search attributes..."
+              className="pl-10 pr-4 py-2 border rounded-lg w-full text-sm" // Reduced font size slightly
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+            />
+          </div>
+        </div>
+
+        {/* Modal Body - Attribute List */}
+        {/* Apply min-height and adjust padding */}
+        <div className="px-6 py-2 space-y-1 overflow-y-auto flex-1 min-h-[300px]"> {/* Adjusted padding, added min-height */}
+          {filteredAndSortedAttributes.length > 0 ? (
+            filteredAndSortedAttributes.map((attribute) => (
+              <div
+                key={attribute.id}
+                // Reduced vertical padding (py-2), keep horizontal padding (px-3)
+                className="flex items-center space-x-3 py-2 px-3 border rounded-lg hover:bg-gray-50 cursor-pointer"
+                onClick={() => handleToggle(attribute.id)}
+              >
+                <input
+                  type="checkbox"
+                  id={`edit-attr-${attribute.id}`}
+                  checked={selectedEditAttributes.includes(attribute.id)}
+                  onChange={() => handleToggle(attribute.id)}
+                  // Make checkbox non-interactive directly as div is clickable
+                  className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 pointer-events-none h-4 w-4"
+                />
+                <label htmlFor={`edit-attr-${attribute.id}`} className="font-medium cursor-pointer flex-grow text-sm"> {/* Reduced font size */}
+                  {attribute.label}
+                </label>
+              </div>
+            ))
+          ) : (
+            <p className="text-center text-gray-500 italic pt-4">
+              {searchTerm ? `No attributes found matching "${searchTerm}".` : 'No attributes available.'}
+            </p>
+          )}
+        </div>
+
+        {/* Modal Footer */}
+        <div className="flex justify-between items-center p-4 border-t border-gray-200 bg-gray-50 rounded-b-lg sticky bottom-0 z-10">
+          <span className="text-sm text-gray-600">
+             {selectedEditAttributes.length} attribute{selectedEditAttributes.length !== 1 ? 's' : ''} selected
+          </span>
+          <div className="space-x-3">
+             <button
+               onClick={onClose}
+               className="px-4 py-2 bg-white border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+             >
+               Cancel
+             </button>
+             <button
+               onClick={handleConfirmClick}
+               disabled={selectedEditAttributes.length === 0}
+               className="px-4 py-2 bg-blue-600 border border-transparent rounded-md shadow-sm text-sm font-medium text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+             >
+               Confirm Attributes
+             </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+</file>
+
+<file path="src/components/FilterModal.tsx">
+import React, { useState } from 'react';
+import { X, Plus, Trash2 } from 'lucide-react';
+// Import from the new config file
+import { sharedAvailableAttributes, getAttributeLabel, Attribute } from '@/config/attributes.ts'; 
+
+// Define filter structure
+interface Filter {
+  id: string; // Unique ID for React key
+  attribute: string;
+  operator: string;
+  value: string;
+}
+
+// Define available operators (simple text for now)
+const operators = [
+  { id: 'eq', label: 'is' },
+  { id: 'neq', label: 'is not' },
+  { id: 'contains', label: 'contains' },
+  { id: 'does_not_contain', label: 'does not contain' },
+  { id: 'starts_with', label: 'starts with' },
+  { id: 'ends_with', label: 'ends with' },
+  { id: 'is_empty', label: 'is empty' },        // No value input needed
+  { id: 'is_not_empty', label: 'is not empty' }, // No value input needed
+];
+
+// Define props
+interface FilterModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  onApplyFilters: (filters: Omit<Filter, 'id'>[]) => void; // Pass filters without internal id
+}
+
+// Get attributes available for filtering (exclude non-filterable types if needed)
+const filterableAttributes = sharedAvailableAttributes.filter(attr => !['id', 'created_at'].includes(attr.id)); // Example filter
+
+export const FilterModal: React.FC<FilterModalProps> = ({
+  isOpen,
+  onClose,
+  onApplyFilters,
+}) => {
+  const [filters, setFilters] = useState<Filter[]>([]);
+
+  if (!isOpen) return null;
+
+  // Add a new empty filter row
+  const addFilter = () => {
+    setFilters([
+      ...filters,
+      {
+        id: crypto.randomUUID(), // Generate unique ID for the row
+        attribute: filterableAttributes[0]?.id || '', // Default to first available attribute
+        operator: operators[0].id, // Default to first operator
+        value: '',
+      },
+    ]);
+  };
+
+  // Remove a filter row by its unique ID
+  const removeFilter = (idToRemove: string) => {
+    setFilters(filters.filter(f => f.id !== idToRemove));
+  };
+
+  // Update a specific filter row
+  const updateFilter = (idToUpdate: string, field: keyof Omit<Filter, 'id'>, value: string) => {
+    setFilters(filters.map(f => 
+      f.id === idToUpdate ? { ...f, [field]: value } : f
+    ));
+  };
+
+  // Handle Apply button click
+  const handleApply = () => {
+    // Remove the internal id before passing filters back
+    const filtersToApply = filters.map(({ id, ...rest }) => rest);
+    // Filter out potentially invalid/incomplete filters (e.g., empty attribute or operator)
+    const validFilters = filtersToApply.filter(f => f.attribute && f.operator && (f.value || ['is_empty', 'is_not_empty'].includes(f.operator)));
+    onApplyFilters(validFilters);
+    onClose(); 
+  };
+
+  // Handle Clear All button click
+  const handleClearAll = () => {
+      setFilters([]);
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 transition-opacity duration-300">
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl mx-4 max-h-[80vh] flex flex-col transform transition-all duration-300 scale-100 opacity-100">
+        {/* Modal Header */}
+        <div className="flex justify-between items-center p-4 border-b border-gray-200">
+          <h2 className="text-lg font-medium text-gray-800">Filter Employees</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 p-1 rounded-full hover:bg-gray-100" aria-label="Close modal">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        {/* Modal Body - Dynamic Filter Rows */}
+        <div className="p-6 space-y-4 overflow-y-auto flex-1">
+          {filters.length === 0 && (
+              <p className="text-center text-gray-500 italic">No filters applied. Add a filter to begin.</p>
+          )}
+          {filters.map((filter, index) => {
+            const requiresValue = !['is_empty', 'is_not_empty'].includes(filter.operator);
+            return (
+              <div key={filter.id} className="flex items-center space-x-2 bg-gray-50 p-3 rounded-md border">
+                {/* Attribute Select */}
+                <select 
+                  value={filter.attribute}
+                  onChange={(e) => updateFilter(filter.id, 'attribute', e.target.value)}
+                  className="px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 text-sm w-1/4"
+                >
+                  <option value="" disabled>Select Attribute</option>
+                  {filterableAttributes.map(attr => (
+                    <option key={attr.id} value={attr.id}>{attr.label}</option>
+                  ))}
+                </select>
+
+                {/* Operator Select */}
+                <select 
+                  value={filter.operator}
+                  onChange={(e) => updateFilter(filter.id, 'operator', e.target.value)}
+                  className="px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 text-sm w-1/4"
+                >
+                   {operators.map(op => (
+                    <option key={op.id} value={op.id}>{op.label}</option>
+                  ))}
+                </select>
+
+                {/* Value Input (Conditional) */}
+                <input
+                  type="text" // TODO: Change type based on attribute
+                  value={filter.value}
+                  onChange={(e) => updateFilter(filter.id, 'value', e.target.value)}
+                  placeholder={requiresValue ? "Enter value..." : ""}
+                  disabled={!requiresValue}
+                  className={`w-1/2 px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm ${!requiresValue ? 'bg-gray-100 cursor-not-allowed' : ''}`}
+                />
+
+                {/* Remove Button */}
+                <button onClick={() => removeFilter(filter.id)} className="text-gray-400 hover:text-red-600 p-1" title="Remove filter">
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              </div>
+            );
+            })}
+
+          {/* Add Filter Button */}
+          <button 
+            onClick={addFilter} 
+            className="mt-2 flex items-center space-x-1 text-sm text-blue-600 hover:text-blue-800"
+          >
+            <Plus className="h-4 w-4" />
+            <span>Add Filter</span>
+          </button>
+        </div>
+
+        {/* Modal Footer */}
+        <div className="flex justify-between items-center p-4 border-t border-gray-200 bg-gray-50 rounded-b-lg">
+           <button
+            onClick={handleClearAll}
+            disabled={filters.length === 0}
+            className="px-4 py-2 bg-white border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            Clear All Filters
+          </button>
+          <div className="space-x-3">
+             <button
+               onClick={onClose}
+               className="px-4 py-2 bg-white border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+             >
+               Cancel
+             </button>
+             <button
+               onClick={handleApply}
+               className="px-4 py-2 bg-blue-600 border border-transparent rounded-md shadow-sm text-sm font-medium text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+             >
+               Apply Filters
+             </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+</file>
+
+<file path="src/components/PeopleList.tsx">
+'use client'; // Add use client directive
+
+import React, { useState, useEffect, useMemo } from 'react';
+import { useRouter } from 'next/navigation'; // Import useRouter
+import { Search, Filter, Settings } from 'lucide-react';
+import { ProfileSelector } from './ProfileSelector';
+import { FilterModal } from './FilterModal';
+import { EditAttributeModal } from './EditAttributeModal';
+import { BulkInputScreen } from './BulkInputScreen';
+import { PreviewChangesScreen } from './PreviewChangesScreen';
+import { supabase } from '@/utils/supabase/client';
+import { sharedAvailableAttributes, getAttributeLabel } from '@/config/attributes'; // Import from new file
+
+// Define Employee type (Consider moving to a shared types file)
+type Employee = {
+  id: string; // Assuming UUID from Supabase
+  full_name?: string;
+  job_title?: string;
+  department?: string;
+  preferred_name?: string;
+  work_email?: string;
+  personal_email?: string;
+  phone_number?: string;
+  manager_id?: string;
+  employment_status?: string;
+  start_date?: string;
+  end_date?: string;
+  work_location?: string;
+  base_salary?: number; // Assuming number
+  currency?: string;
+  // Add other relevant fields as needed based on your 'employees' table schema
+  [key: string]: any; // Allow dynamic access
+};
+
+// Define filter structure (matching FilterModal, excluding id)
+interface AppliedFilter {
+  attribute: string;
+  operator: string;
+  value: string;
+}
+
+export const PeopleList = () => {
+  const router = useRouter(); // Initialize router
+  const [showModal, setShowModal] = useState(false);
+  const [showFilterModal, setShowFilterModal] = useState(false);
+  const [showEditAttributeModal, setShowEditAttributeModal] = useState(false);
+  // States to hold data for the next step (Bulk Input View)
+  const [attributesForEditing, setAttributesForEditing] = useState<string[]>([]);
+  const [employeesForEditing, setEmployeesForEditing] = useState<string[]>([]);
+  // State to manage the current view/step in the bulk edit process
+  const [currentView, setCurrentView] = useState<'list' | 'bulkInput' | 'preview' | 'confirm'>('list');
+
+  // Initialize with default columns based on the schema
+  const [selectedAttributes, setSelectedAttributes] = useState<string[]>(['work_email', 'department', 'job_title']);
+  // State for selected employee IDs (assuming Supabase ID is string/UUID)
+  const [selectedEmployeeIds, setSelectedEmployeeIds] = useState<string[]>([]);
+  // State for search term
+  const [searchTerm, setSearchTerm] = useState<string>('');
+
+  // State for data fetching
+  const [employees, setEmployees] = useState<Employee[]>([]);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
+  // Add state for pending changes from BulkInputScreen
+  const [pendingChanges, setPendingChanges] = useState<Record<string, Record<string, any>>>({});
+
+  // State for active filters applied from the modal
+  const [activeFilters, setActiveFilters] = useState<AppliedFilter[]>([]);
+  const [isMounted, setIsMounted] = useState(false); // State to track client mount
+
+  // --- Add state for error/success feedback specific to API calls ---
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [submitSuccess, setSubmitSuccess] = useState<string | null>(null);
+
+  // --- Function to fetch employees (defined here for reuse) ---
+  const fetchEmployees = async () => {
+      setIsLoading(true);
+      setError(null);
+
+      // Fetch all columns initially, as user can select any
+      const { data, error: fetchError } = await supabase
+        .from('employees')
+        .select('*'); // Fetch all available columns
+
+      if (fetchError) {
+        console.error('Error fetching employees:', fetchError);
+        setError(`Failed to load employees: ${fetchError.message}`);
+      } else {
+        setEmployees(data || []);
+      }
+      setIsLoading(false);
+  };
+
+  // Function to apply filters (used by useMemo)
+  const applyAllFilters = (
+      employeesToFilter: Employee[], 
+      currentSearchTerm: string, 
+      currentActiveFilters: AppliedFilter[]
+  ): Employee[] => {
+    console.log('[FilterFunc] Applying filters...');
+    let filtered = [...employeesToFilter];
+
+    // 1. Search Term
+    if (currentSearchTerm) {
+        const lowerCaseSearchTerm = currentSearchTerm.toLowerCase();
+        filtered = filtered.filter(employee =>
+            (employee.full_name?.toLowerCase().includes(lowerCaseSearchTerm)) ||
+            (employee.work_email?.toLowerCase().includes(lowerCaseSearchTerm)) ||
+            (employee.job_title?.toLowerCase().includes(lowerCaseSearchTerm)) ||
+            (employee.department?.toLowerCase().includes(lowerCaseSearchTerm)) ||
+            (employee.team?.toLowerCase().includes(lowerCaseSearchTerm)) ||
+            (employee.preferred_name?.toLowerCase().includes(lowerCaseSearchTerm))
+        );
+    }
+
+    // 2. Active Filters
+    if (currentActiveFilters.length > 0) {
+        filtered = filtered.filter(employee => {
+            // Log the result of the .every() check for each employee
+            const doesEmployeeMatchAll = currentActiveFilters.every((filter: AppliedFilter) => {
+                const value = employee[filter.attribute];
+                const filterValue = filter.value;
+                const operator = filter.operator;
+                let match = false;
+                
+                // Handle string comparisons with trim and lowercase
+                const stringValue = (value === null || value === undefined) ? '' : String(value).trim().toLowerCase();
+                const stringFilterValue = String(filterValue).trim().toLowerCase(); // Trim filter value too
+
+                switch (operator) {
+                    case 'eq': match = stringValue === stringFilterValue; break;
+                    case 'neq': match = stringValue !== stringFilterValue; break;
+                    case 'contains': match = stringValue.includes(stringFilterValue); break;
+                    case 'does_not_contain': match = !stringValue.includes(stringFilterValue); break;
+                    case 'starts_with': match = stringValue.startsWith(stringFilterValue); break;
+                    case 'ends_with': match = stringValue.endsWith(stringFilterValue); break;
+                    // is_empty / is_not_empty check original value BEFORE trimming/lowercasing
+                    case 'is_empty': match = value === null || value === undefined || String(value).trim() === ''; break;
+                    case 'is_not_empty': match = value !== null && value !== undefined && String(value).trim() !== ''; break;
+                    default: match = true;
+                }
+                console.log(`  [Filter Check] EmpID: ${employee.id}, Attr: ${filter.attribute}, Op: ${operator}, Val: ${filterValue}, EmpVal: ${value}, Match: ${match}`);
+                return match;
+            });
+            console.log(`[Every Check] EmpID: ${employee.id}, Matches All: ${doesEmployeeMatchAll}`);
+            return doesEmployeeMatchAll; // Return the result of .every()
+        });
+    }
+    console.log('[FilterFunc] Done applying. Result count:', filtered.length);
+    return filtered;
+  };
+
+  // Filter employees using the memoized function call
+  const filteredEmployees = useMemo(() => {
+    console.log('[Memo] Recalculating filteredEmployees...');
+    return applyAllFilters(employees, searchTerm, activeFilters);
+  }, [employees, searchTerm, activeFilters]);
+
+  // Fetch employees on component mount
+  useEffect(() => {
+    fetchEmployees(); // Call the function defined above
+  }, []); // Empty dependency array ensures this runs only once on mount
+
+  // Updated function for applying filters 
+  const handleApplyFilters = (appliedFilters: AppliedFilter[]) => {
+    console.log('[PeopleList] Applying filters:', appliedFilters);
+    setActiveFilters(appliedFilters); // This triggers the useMemo to refilter
+  };
+
+  // Callback specifically for attribute changes from the modal
+  const handleAttributesChange = (newAttributes: string[]) => {
+    setSelectedAttributes(newAttributes);
+    // Close the modal automatically after selection, if desired
+    // setShowModal(false);
+  };
+
+  // --- Checkbox Handlers ---
+
+  // Handle selecting/deselecting all employees
+  const handleSelectAll = (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (event.target.checked) {
+      // Select all *filtered* employees
+      setSelectedEmployeeIds(filteredEmployees.map(e => e.id));
+    } else {
+      // Deselect all
+      setSelectedEmployeeIds([]);
+    }
+  };
+
+  // Handle selecting/deselecting a single employee
+  const handleSelectRow = (employeeId: string) => {
+    setSelectedEmployeeIds(prevSelectedIds => {
+      if (prevSelectedIds.includes(employeeId)) {
+        // Remove ID if already selected
+        return prevSelectedIds.filter(id => id !== employeeId);
+      } else {
+        // Add ID if not selected
+        return [...prevSelectedIds, employeeId];
+      }
+    });
+  };
+
+  // Determine if the header checkbox should be checked
+  const isAllSelected = filteredEmployees.length > 0 && selectedEmployeeIds.length === filteredEmployees.length;
+  // Determine if the header checkbox should show indeterminate state
+  const isIndeterminate = selectedEmployeeIds.length > 0 && selectedEmployeeIds.length < filteredEmployees.length;
+
+  // Handler for confirming attributes to edit from the modal
+  const handleConfirmEditAttributes = (attributesToEdit: string[]) => {
+    console.log("Attributes selected for editing:", attributesToEdit);
+    console.log("Employees selected for editing:", selectedEmployeeIds);
+    setAttributesForEditing(attributesToEdit);
+    setEmployeesForEditing([...selectedEmployeeIds]); // Store the currently selected employees
+    setShowEditAttributeModal(false);
+    setCurrentView('bulkInput'); // Navigate to the next step/view
+    // Clear selection after initiating edit? Optional, depends on desired UX
+    // setSelectedEmployeeIds([]); 
+  };
+
+  // Handler for Preview button from BulkInputScreen
+  const handlePreview = (changesData: Record<string, Record<string, any>>) => {
+    console.log("Changes received for preview:", changesData);
+    setPendingChanges(changesData);
+    setCurrentView('preview'); // Navigate to the Preview step
+  };
+
+  // Handler for Cancel button from BulkInputScreen or unified workflow cancel
+  const handleCancelWorkflow = () => {
+    console.log("[PeopleList] handleCancelWorkflow called. Resetting state."); // Add log
+    setAttributesForEditing([]);
+    setEmployeesForEditing([]);
+    setSelectedEmployeeIds([]); // Clear selection as well
+    setPendingChanges({}); 
+    setCurrentView('list'); 
+  };
+
+  // Handler for Edit button from PreviewScreen
+  const handleGoBackToEdit = () => {
+    console.log("[PeopleList] handleGoBackToEdit called. Returning to bulk input."); // Add log
+    // Don't clear pendingChanges here, user might want to resume editing
+    setCurrentView('bulkInput');
+  };
+
+  // Handler for Confirm button from PreviewScreen
+  const handleConfirmChanges = async () => {
+    console.log("Attempting to confirm changes via API:", pendingChanges);
+    console.log("Employee IDs for API:", employeesForEditing);
+    setSubmitError(null); // Clear previous errors/success
+    setSubmitSuccess(null); // Clear previous success message state
+    
+    try {
+      const response = await fetch('/api/bulk-edit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          changes: pendingChanges, 
+          employeeIds: employeesForEditing,
+          // No scheduleDateTime for immediate confirm
+        }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Unknown API error');
+
+      // setSubmitSuccess(`Changes submitted successfully! Batch ID: ${result.batchId}`); // Remove success state update
+      // alert(`Changes submitted successfully! Batch ID: ${result.batchId}`); // Remove alert
+      
+      // Reset state and return to list
+      setAttributesForEditing([]);
+      setEmployeesForEditing([]);
+      setSelectedEmployeeIds([]);
+      setPendingChanges({});
+      setCurrentView('list');
+      fetchEmployees(); 
+      router.push('/audit'); // Navigate to audit page
+    } catch (error: any) {
+      console.error("Error confirming changes:", error);
+      setSubmitError(`Failed to submit changes: ${error.message}`);
+      alert(`Failed to submit changes: ${error.message || 'Network error'}`); // Keep error alert for now
+    }
+  };
+
+  // Handler for Schedule button from PreviewScreen - Updated to accept dateTime
+  const handleScheduleChanges = async (scheduleDateTime: string | null) => {
+      if (!scheduleDateTime) {
+          // This case should ideally be prevented by the Preview screen check,
+          // but handle defensively.
+          alert("No schedule date/time provided."); 
+          console.error("[handleScheduleChanges] scheduleDateTime was null or empty.");
+          return; 
+      }
+      console.log("Attempting to schedule changes via API for:", scheduleDateTime);
+      console.log("Changes:", pendingChanges);
+      console.log("Employee IDs:", employeesForEditing);
+      setSubmitError(null); // Clear previous errors/success
+      setSubmitSuccess(null); // Clear previous success message state
+
+      try {
+        const response = await fetch('/api/bulk-edit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            changes: pendingChanges,
+            employeeIds: employeesForEditing,
+            scheduleDateTime: scheduleDateTime // Use the passed-in dateTime
+          }),
+        });
+
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || 'Unknown API error');
+
+        // setSubmitSuccess(`Changes scheduled successfully for ${new Date(scheduleDateTime).toLocaleString()}! Batch ID: ${result.batchId}`); // Remove success state update
+        // alert(`Changes scheduled successfully for ${new Date(scheduleDateTime).toLocaleString()}! Batch ID: ${result.batchId}`); // Remove alert
+
+        // Reset state and return to list
+        setAttributesForEditing([]);
+        setEmployeesForEditing([]);
+        setSelectedEmployeeIds([]);
+        setPendingChanges({});
+        setCurrentView('list');
+        router.push('/audit'); // Navigate to audit page
+        // No need to refetch immediately for scheduled changes
+      } catch (error: any) {
+        console.error("Error scheduling changes:", error);
+        setSubmitError(`Failed to schedule changes: ${error.message}`);
+        alert(`Failed to schedule changes: ${error.message || 'Network error'}`); // Keep error alert for now
+      }
+  };
+
+  // Filter employees needed for the Bulk Input screen
+  const employeesToEdit = useMemo(() => {
+      // Ensure employees have loaded before filtering
+      if (!employees || employees.length === 0 || employeesForEditing.length === 0) {
+          return [];
+      }
+      return employees.filter(e => employeesForEditing.includes(e.id));
+  }, [employees, employeesForEditing]);
+
+  // Effect to set mounted state on client
+  useEffect(() => {
+      setIsMounted(true);
+  }, []);
+
+  // --- Main Render Logic ---
+  console.log('[PeopleList] Rendering - currentView:', currentView, 'showEditAttributeModal:', showEditAttributeModal);
+
+  if (currentView === 'bulkInput') {
+    // Ensure we have data before rendering the input screen
+    if (employeesToEdit.length === 0 && employeesForEditing.length > 0 && !isLoading) {
+        // Handle edge case where selected employee data isn't found (e.g., deleted between steps)
+        return (
+            <div className="p-6 text-center text-red-600">
+                Error: Could not find data for selected employees. 
+                <button onClick={handleCancelWorkflow} className="ml-2 text-blue-600 underline">Return to list</button>
+            </div>
+        );
+    } else if (isLoading) {
+         return <div className="p-6 text-center text-gray-500 italic">Loading employee data...</div>;
+    }
+    
+    return (
+      <BulkInputScreen
+        employees={employeesToEdit}
+        attributes={attributesForEditing}
+        initialChanges={pendingChanges}
+        onPreview={handlePreview}
+        onCancel={handleCancelWorkflow}
+      />
+    );
+  } else if (currentView === 'preview') {
+      // Ensure we have data before rendering the preview screen
+      if (employeesToEdit.length === 0 && employeesForEditing.length > 0 && !isLoading) {
+          return (
+              <div className="p-6 text-center text-red-600">
+                  Error: Could not find data for selected employees for preview. 
+                  <button onClick={handleCancelWorkflow} className="ml-2 text-blue-600 underline">Return to list</button>
+              </div>
+          );
+      } else if (isLoading) {
+           return <div className="p-6 text-center text-gray-500 italic">Loading employee data...</div>;
+      }
+      
+      return (
+          <PreviewChangesScreen 
+              employees={employeesToEdit} 
+              attributes={attributesForEditing}
+              changes={pendingChanges}
+              onEdit={handleGoBackToEdit}
+              onConfirm={handleConfirmChanges}
+              onSchedule={handleScheduleChanges} // Pass the updated handler
+          />
+      );
+  }
+
+  // --- Original List View Render --- (currentView === 'list')
+  // Add log before return to check state during render
+  console.log('[PeopleList Render] List View - activeFilters.length:', activeFilters.length);
+  
+  return <div className="p-6">
+      {/* Top section: Title, Filter buttons */}
+      <div className="flex justify-between items-center mb-8">
+        <h1 className="text-2xl font-bold">People</h1>
+        {/* Removed Hire button and simplified container */}
+        {/* <div className="flex space-x-4">
+          <button
+            onClick={() => setShowFilterModal(true)}
+            className="px-4 py-2 border rounded-lg flex items-center space-x-2 hover:bg-gray-50"
+          >
+            <Filter className="h-4 w-4" />
+            <span>Filter Employees</span>
+          </button>
+          <button className="px-4 py-2 bg-yellow-400 text-black rounded-lg hover:bg-yellow-500">
+            Hire
+          </button>
+        </div> */}
+      </div>
+      <div className="flex space-x-8 border-b mb-6">
+        <button className="px-4 py-2 border-b-2 border-gray-900 font-medium">
+          List View
+        </button>
+        <button className="px-4 py-2 text-gray-500">Org Chart</button>
+        <button className="px-4 py-2 text-gray-500">Org Chart Diagram</button>
+      </div>
+      <div className="flex items-center space-x-4 mb-6">
+        <button className="px-4 py-2 bg-gray-100 rounded-lg font-medium">
+          Active ({isLoading ? '...' : filteredEmployees.length})
+        </button>
+        <button className="px-4 py-2 text-gray-500">New hires (0)</button>
+        <button className="px-4 py-2 text-gray-500">Changes (0)</button>
+        <button className="px-4 py-2 text-gray-500">Offboarding (0)</button>
+        <button className="px-4 py-2 text-gray-500">Terminated (0)</button>
+      </div>
+      <div className="bg-gray-50 p-4 border-t border-b border-gray-200 mb-6">
+        <div className="flex justify-between items-center">
+          <div className="flex space-x-4">
+            <button className="px-4 py-2 bg-gray-200 rounded-lg text-sm font-medium">
+              All
+            </button>
+            {/* <button className="px-4 py-2 text-gray-500 hover:bg-gray-200/50 rounded-lg text-sm">
+              Pending onboarding
+            </button> */} {/* Removed Pending Onboarding button */}
+          </div>
+          <div className="flex items-center space-x-2 flex-grow justify-end"> 
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-4 w-4" />
+              <input
+                type="text"
+                placeholder="Search name, email, title..."
+                className="pl-10 pr-4 py-2 border rounded-lg w-64 md:w-96 lg:w-[500px] bg-white"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+              />
+            </div>
+            <button 
+              onClick={() => setShowFilterModal(true)} 
+              className={`p-2 border rounded-lg hover:bg-gray-100 flex-shrink-0 ${activeFilters.length > 0 ? 'bg-blue-100 border-blue-300' : 'bg-white'}`}
+              title="Filter Employees"
+            >
+                <Filter className={`h-5 w-5 ${activeFilters.length > 0 ? 'text-blue-600' : 'text-gray-500'}`} />
+            </button>
+            <button 
+              onClick={() => setShowModal(true)} 
+              className="p-2 border rounded-lg hover:bg-gray-100 flex-shrink-0 bg-white"
+              title="Customize Columns"
+            >
+                <Settings className="h-5 w-5 text-gray-500" />
+            </button>
+          </div>
+        </div>
+      </div>
+      <div className="bg-white rounded-lg border">
+        <div className="overflow-x-auto"> 
+            <table className="w-full min-w-[1000px] border-collapse">
+              <thead>
+                <tr className="border-b bg-gray-50">
+                  <th className="p-4 w-12 sticky left-0 z-30">
+                    <input
+                      type="checkbox"
+                      className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                      checked={isAllSelected}
+                      ref={el => {
+                        if (el) {
+                          el.indeterminate = isIndeterminate;
+                        }
+                      }}
+                      onChange={handleSelectAll}
+                      disabled={isLoading || filteredEmployees.length === 0}
+                    />
+                  </th>
+                  <th className="text-left p-4 font-medium text-gray-600 sticky left-12 z-20 min-w-[250px] max-w-[300px]">People</th>
+                  {selectedAttributes.map(attr => <th key={attr} className="text-left p-4 font-medium text-gray-600 min-w-[150px]">{getAttributeLabel(attr)}</th>)}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200">
+                {!isMounted || isLoading ? (
+                  <tr><td colSpan={selectedAttributes.length + 2} className="p-4 text-center text-gray-500 italic">Loading...</td></tr>
+                ) : error ? (
+                  <tr><td colSpan={selectedAttributes.length + 2} className="p-4 text-center text-red-500 italic">{error}</td></tr>
+                ) : filteredEmployees.length === 0 ? (
+                  <tr><td colSpan={selectedAttributes.length + 2} className="p-4 text-center text-gray-500 italic">
+                    {searchTerm || activeFilters.length > 0 ? `No employees found matching criteria.` : 'No employees found.'}
+                  </td></tr>
+                ) : (
+                  filteredEmployees.map((employee: Employee) => (
+                    <tr 
+                      key={employee.id} 
+                      className={`hover:bg-gray-50 ${selectedEmployeeIds.includes(employee.id) ? 'bg-blue-50' : 'bg-white'}`} 
+                    >
+                      <td 
+                        className="p-4 w-12 sticky left-0 z-20 bg-white" // Use className for base bg
+                        // style={{ backgroundColor: selectedEmployeeIds.includes(employee.id) ? '#EFF6FF' /* bg-blue-50 */ : '#FFFFFF' /* bg-white */ }} // Remove inline style
+                      >
+                        <input
+                          type="checkbox"
+                          className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                          checked={selectedEmployeeIds.includes(employee.id)}
+                          onChange={() => handleSelectRow(employee.id)}
+                        />
+                      </td>
+                      <td 
+                        className="p-4 sticky left-12 z-10 min-w-[250px] max-w-[300px] bg-white" // Use className for base bg
+                        // style={{ backgroundColor: selectedEmployeeIds.includes(employee.id) ? '#EFF6FF' /* bg-blue-50 */ : '#FFFFFF' /* bg-white */ }} // Remove inline style
+                      >
+                        <div className="flex items-center space-x-3">
+                          <div className="w-8 h-8 rounded-full bg-blue-200 flex items-center justify-center text-blue-700 font-semibold text-sm">
+                            {employee.full_name?.split(' ').map(n=>n[0]).join('') ?? '?'}
+                          </div>
+                          <div>
+                            <div className="font-medium">{employee.full_name ?? 'N/A'}</div>
+                            <div className="text-sm text-gray-500">{employee.job_title ?? 'N/A'}</div>
+                          </div>
+                        </div>
+                      </td>
+                      {selectedAttributes.map(attr => (
+                        <td key={attr} className="p-4 text-gray-600 min-w-[150px] truncate">
+                          {employee[attr] !== null && employee[attr] !== undefined ? String(employee[attr]) : 'N/A'}
+                        </td>
+                      ))}
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+        </div>
+      </div>
+      {showModal && <ProfileSelector
+        onClose={() => setShowModal(false)}
+        onAttributesChange={handleAttributesChange}
+        initialSelectedAttributes={selectedAttributes}
+      />}
+
+      <EditAttributeModal
+        isOpen={showEditAttributeModal}
+        onClose={() => setShowEditAttributeModal(false)}
+        onConfirm={handleConfirmEditAttributes}
+        initialSelectedAttributes={selectedAttributes}
+        allAvailableAttributes={sharedAvailableAttributes.filter(attr => !['id', 'created_at', 'full_name'].includes(attr.id))} 
+      />
+
+      <FilterModal
+        isOpen={showFilterModal}
+        onClose={() => setShowFilterModal(false)}
+        onApplyFilters={handleApplyFilters}
+      />
+
+      {/* Floating Action Buttons - Appears when employees are selected */}
+      {selectedEmployeeIds.length > 0 && currentView === 'list' && (
+        <div 
+          className="fixed bottom-6 left-1/2 transform -translate-x-1/2 z-40 
+                     bg-gray-900 bg-opacity-75 backdrop-blur-sm /* Darker, blurred background */
+                     p-2 rounded-xl shadow-lg flex items-center space-x-4" /* Slightly larger padding/radius */
+        >
+          {/* Clear Selection Button - Reverted size */}
+          <button
+            onClick={() => setSelectedEmployeeIds([])} 
+            className="px-5 py-2 bg-white border border-gray-300 text-gray-700 rounded-lg shadow-sm hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition duration-150 ease-in-out text-base font-medium" /* Larger padding/text */
+            title="Clear selected employees"
+          >
+            Clear Selection
+          </button>
+          
+          {/* Edit Button - Reverted size */}
+          <button
+            onClick={() => {
+              setShowEditAttributeModal(true);
+            }}
+            className="px-5 py-2 bg-blue-600 text-white rounded-lg shadow-sm hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition duration-150 ease-in-out flex items-center space-x-2 text-base font-medium" /* Larger padding/text */
+          >
+            <Settings className="h-5 w-5" /> {/* Larger icon */}
+            <span>
+              Edit {selectedEmployeeIds.length} employee{selectedEmployeeIds.length !== 1 ? 's' : ''}
+            </span>
+          </button>
+        </div>
+      )}
+
+      {/* Display Submit Success/Error Messages */} 
+      {/* {submitSuccess && <div className="m-4 p-3 bg-green-100 border border-green-400 text-green-700 rounded">{submitSuccess}</div>} */} {/* Removed Success message display */}
+      {submitError && <div className="m-4 p-3 bg-red-100 border border-red-400 text-red-700 rounded">{submitError}</div>}
+
+    </div>;
+};
+</file>
+
+<file path="src/components/PreviewChangesScreen.tsx">
+import React, { useState } from 'react';
+// Import from the new config file
+import { sharedAvailableAttributes, getAttributeLabel, Attribute } from '@/config/attributes.ts'; 
+import { ScheduleModal } from './ScheduleModal.tsx'; // Import the new modal
+
+// Define structure for Employee (can be imported if moved)
+type Employee = {
+  id: string;
+  full_name?: string;
+  [key: string]: any;
+};
+
+// Define the structure for changes
+type ChangeRecord = Record<string, Record<string, any>>;
+
+// Props for the PreviewChangesScreen
+interface PreviewChangesScreenProps {
+  employees: Employee[]; // Array of selected employee objects (original data)
+  attributes: string[]; // Array of attribute IDs being edited
+  changes: ChangeRecord; // Object containing the new values { empId: { attrId: newValue } }
+  onEdit: () => void; // Callback to go back to the input screen
+  onConfirm: () => void; // Callback to confirm and submit changes
+  onSchedule: (scheduleDateTime: string) => void; // Expects a non-null string now
+}
+
+// Helper to format value for display
+const formatValue = (value: any): string => {
+    if (value === null || value === undefined || value === '') {
+        return ''; // Represent empty/null consistently
+    }
+    // Add more formatting logic here if needed (dates, numbers, currency)
+    return String(value);
+};
+
+export const PreviewChangesScreen: React.FC<PreviewChangesScreenProps> = ({
+  employees,
+  attributes,
+  changes,
+  onEdit,
+  onConfirm,
+  onSchedule,
+}) => {
+
+  // Add state for schedule modal visibility
+  const [isScheduleModalOpen, setIsScheduleModalOpen] = useState<boolean>(false);
+
+  // Calculate the total number of actual changes
+  const totalChangesCount = Object.values(changes).reduce((acc, empChanges) => acc + Object.keys(empChanges).length, 0);
+
+  // Handler to be passed to the modal for confirming the schedule
+  const handleConfirmSchedule = (dateTime: string) => {
+    console.log('[PreviewChangesScreen] Scheduling confirmed for:', dateTime);
+    onSchedule(dateTime); // Call the original onSchedule prop
+    setIsScheduleModalOpen(false); // Close the modal
+  };
+
+  return (
+    <div className="bg-gray-50 min-h-screen">
+      <div className="max-w-7xl mx-auto">
+        {/* Header with Title and Action Buttons - Add padding here */}
+        <div className="flex justify-between items-center mb-6 flex-wrap gap-4 px-6 pt-6">
+          <h1 className="text-2xl font-bold text-gray-800">Preview Changes</h1>
+          <div className="flex items-center space-x-3 flex-wrap gap-y-2">
+            <button
+              onClick={onEdit}
+              className="px-4 py-2 bg-white border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+            >
+              Back to Edit
+            </button>
+            
+            {/* Update Schedule Changes button to open modal */}
+            <button
+              onClick={() => setIsScheduleModalOpen(true)} 
+              className="px-4 py-2 bg-indigo-600 border border-transparent rounded-md shadow-sm text-sm font-medium text-white hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed"
+              disabled={totalChangesCount === 0} 
+            >
+              Schedule Changes
+            </button>
+
+            <button
+              onClick={onConfirm}
+              disabled={totalChangesCount === 0}
+              className="px-4 py-2 bg-blue-600 border border-transparent rounded-md shadow-sm text-sm font-medium text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Confirm Changes
+            </button>
+          </div>
+        </div>
+
+        {/* Summary Text - Add padding here */} 
+        <p className="mb-4 text-sm text-gray-600 px-6">
+          Reviewing {totalChangesCount} change(s) across {Object.keys(changes).length} employee(s). 
+          Changes are highlighted below.
+        </p>
+
+        {/* Read-only Table container - Add padding here */}
+        <div className="overflow-x-auto px-6 pb-6">
+          <table className="w-full min-w-[800px] table-fixed bg-white rounded-lg border shadow">
+            <thead className="bg-gray-50">
+              <tr className="border-b">
+                <th className="text-left p-3 px-4 font-semibold text-gray-600 sticky left-0 bg-gray-50 z-10 w-60">Employee</th>
+                {attributes.map(attrId => (
+                  <th key={attrId} className="text-left p-3 px-4 font-semibold text-gray-600 border-l w-52">
+                    {getAttributeLabel(attrId)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-200">
+              {employees.map((employee) => {
+                const employeeChanges = changes[employee.id] || {};
+                const hasChangesForEmployee = Object.keys(employeeChanges).length > 0;
+
+                // Only render rows for employees included in the 'changes' object
+                if (!hasChangesForEmployee) return null;
+
+                return (
+                  <tr key={employee.id} className="hover:bg-gray-50">
+                    <td className="p-3 px-4 sticky left-0 bg-white hover:bg-gray-50 z-10 w-60 align-middle">
+                      <div>
+                        <div className="font-medium text-gray-900">{employee.full_name ?? 'N/A'}</div>
+                        <div className="text-xs text-gray-500">ID: {employee.id}</div>
+                      </div>
+                    </td>
+                    {attributes.map(attrId => {
+                      const originalValue = employee[attrId];
+                      const newValue = employeeChanges[attrId];
+                      const hasChanged = newValue !== undefined && newValue !== null && newValue !== '' && formatValue(newValue) !== formatValue(originalValue);
+
+                      return (
+                        <td key={attrId} className="p-3 px-4 text-sm text-gray-600 border-l w-52 align-middle break-words">
+                          {hasChanged ? (
+                            <div>
+                              <span className="text-red-500 line-through mr-2">
+                                {formatValue(originalValue) || <span className="italic">Empty</span>}
+                              </span>
+                              <span className="text-green-600 font-semibold">
+                                {formatValue(newValue)}
+                              </span>
+                            </div>
+                          ) : (
+                            <span>{formatValue(originalValue) || <span className="text-gray-400 italic">Empty</span>}</span>
+                          )}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        
+        {/* Keep modal outside padding */}
+        <ScheduleModal
+          isOpen={isScheduleModalOpen}
+          onClose={() => setIsScheduleModalOpen(false)}
+          onConfirmSchedule={handleConfirmSchedule}
+        />
+      </div>
+    </div>
+  );
+};
+</file>
+
+<file path="src/components/ProfileSelector.tsx">
+import React, { useState, useEffect } from 'react';
+import { X, Search } from 'lucide-react';
+import { sharedAvailableAttributes, getAttributeLabel, Attribute } from '@/config/attributes';
+
+// Define Employee type again (or import from shared location)
+type Employee = {
+  id: string;
+  full_name?: string;
+  job_title?: string;
+  department?: string;
+  [key: string]: any;
+};
+
+// Define props for ProfileSelector (Simplified)
+interface ProfileSelectorProps {
+  onClose: () => void;
+  onAttributesChange: (attributes: string[]) => void;
+  initialSelectedAttributes: string[];
+}
+
+export const ProfileSelector: React.FC<ProfileSelectorProps> = ({
+  onClose,
+  onAttributesChange,
+  initialSelectedAttributes
+}) => {
+  const [currentSelectedAttributes, setCurrentSelectedAttributes] = useState<string[]>([]);
+  const [searchTerm, setSearchTerm] = useState('');
+
+  useEffect(() => {
+    if (initialSelectedAttributes) {
+      setCurrentSelectedAttributes([...initialSelectedAttributes]);
+    }
+  }, [initialSelectedAttributes]);
+
+  // Handler for internal attribute changes (checkbox click)
+  const handleCheckboxChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const { value, checked } = event.target;
+    setCurrentSelectedAttributes(prev =>
+      checked ? [...prev, value] : prev.filter(attrId => attrId !== value)
+    );
+  };
+
+  // Filter attributes based on search term
+  const filteredAttributes = sharedAvailableAttributes.filter(attr =>
+    getAttributeLabel(attr.id).toLowerCase().includes(searchTerm.toLowerCase()) &&
+    // Exclude non-selectable attributes if necessary (e.g., id, full_name)
+    !['id', 'full_name', 'created_at'].includes(attr.id) 
+  );
+
+  const handleApply = () => {
+      onAttributesChange(currentSelectedAttributes);
+      onClose();
+  };
+
+  const handleClear = () => {
+      setCurrentSelectedAttributes([]);
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-lg w-full max-w-xl max-h-[80vh] overflow-hidden flex flex-col">
+        {/* Header */}
+        <div className="p-4 border-b border-gray-200 flex justify-between items-center flex-shrink-0">
+          <h2 className="text-lg font-medium">Select Columns to Display</h2>
+          <button onClick={onClose} className="text-gray-500 hover:text-gray-700">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        {/* Search Bar */}
+        <div className="p-4 border-b border-gray-200 flex-shrink-0">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-4 w-4" />
+            <input
+              type="text"
+              placeholder="Search attributes..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="pl-10 pr-4 py-2 border rounded-lg w-full bg-white focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+            />
+          </div>
+        </div>
+
+        {/* Body - Scrollable Attribute List */}
+        <div className="p-4 overflow-y-auto flex-grow min-h-[300px]">
+          <p className="text-sm text-gray-600 mb-4">Select the attributes you would like to show in the table</p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2">
+            {filteredAttributes.map(attr => (
+              <label key={attr.id} className="flex items-center space-x-3 p-2 rounded-md border border-gray-200 bg-white hover:bg-gray-50 cursor-pointer transition-colors duration-150">
+                <input
+                  type="checkbox"
+                  value={attr.id}
+                  checked={currentSelectedAttributes.includes(attr.id)}
+                  onChange={handleCheckboxChange}
+                  className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                />
+                <span className="text-sm font-medium text-gray-800">{getAttributeLabel(attr.id)}</span>
+              </label>
+            ))}
+            {filteredAttributes.length === 0 && (
+                <p className="text-sm text-gray-500 col-span-full text-center py-4">No attributes found matching "{searchTerm}".</p>
+            )}
+          </div>
+        </div>
+
+        {/* Footer with Apply/Clear */}
+        <div className="p-4 border-t border-gray-200 bg-gray-50 flex justify-between items-center flex-shrink-0">
+           <button 
+             onClick={handleClear}
+             className="px-4 py-2 bg-white border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+             >
+                Clear All
+            </button>
+           <div className="space-x-3">
+                <button 
+                    onClick={onClose}
+                    className="px-4 py-2 bg-white border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+                >
+                    Cancel
+                </button>
+                <button 
+                    onClick={handleApply} 
+                    className="px-4 py-2 bg-blue-600 border border-transparent rounded-md shadow-sm text-sm font-medium text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+                >
+                    Apply
+                </button>
+           </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+</file>
+
+<file path="src/components/ScheduleModal.tsx">
+import React, { useState, useMemo } from 'react';
+import { X } from 'lucide-react';
+
+interface ScheduleModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  onConfirmSchedule: (dateTime: string) => void;
+}
+
+// Helper to get current date in YYYY-MM-DD format for min attribute
+const getTodayString = () => {
+    const today = new Date();
+    const year = today.getFullYear();
+    const month = String(today.getMonth() + 1).padStart(2, '0'); // Months are 0-indexed
+    const day = String(today.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+};
+
+export const ScheduleModal: React.FC<ScheduleModalProps> = ({ 
+    isOpen, 
+    onClose, 
+    onConfirmSchedule 
+}) => {
+  const [selectedDate, setSelectedDate] = useState<string>('');
+  const [selectedHour, setSelectedHour] = useState<string>('09'); // Default to 9 AM
+  const [selectedMinute, setSelectedMinute] = useState<string>('00'); // Default to :00
+  const [error, setError] = useState<string | null>(null);
+
+  // Generate options for hours (00-23)
+  const hourOptions = useMemo(() => {
+    return Array.from({ length: 24 }, (_, i) => String(i).padStart(2, '0'));
+  }, []);
+
+  // Generate options for minutes (00, 15, 30, 45)
+  const minuteOptions = useMemo(() => {
+    return ['00', '15', '30', '45'];
+    // Or for all minutes: 
+    // return Array.from({ length: 60 }, (_, i) => String(i).padStart(2, '0'));
+  }, []);
+
+  const handleConfirm = () => {
+    setError(null);
+    if (!selectedDate) {
+      setError('Please select a date.');
+      return;
+    }
+    // Combine date, hour, and minute into ISO-like string YYYY-MM-DDTHH:mm
+    const dateTimeString = `${selectedDate}T${selectedHour}:${selectedMinute}`;
+    
+    // Optional: Basic validation to ensure the selected time is in the future
+    const scheduledDateTime = new Date(dateTimeString);
+    if (scheduledDateTime <= new Date()) {
+        setError('Please select a date and time in the future.');
+        return;
+    }
+
+    console.log('[ScheduleModal] Confirming schedule for:', dateTimeString);
+    onConfirmSchedule(dateTimeString);
+  };
+  
+  // Reset state when modal opens/closes
+  React.useEffect(() => {
+      if (isOpen) {
+          setSelectedDate('');
+          setSelectedHour('09');
+          setSelectedMinute('00');
+          setError(null);
+      }
+  }, [isOpen]);
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 transition-opacity duration-300 p-4">
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-md mx-auto flex flex-col transform transition-all duration-300 scale-100 opacity-100">
+        {/* Modal Header */}
+        <div className="flex justify-between items-center p-4 border-b border-gray-200">
+          <h2 className="text-lg font-medium text-gray-800">Schedule Changes</h2>
+          <button
+            onClick={onClose}
+            className="text-gray-400 hover:text-gray-600 p-1 rounded-full hover:bg-gray-100"
+            aria-label="Close modal"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        {/* Modal Body */} 
+        <div className="p-6 space-y-4">
+          <p className="text-sm text-gray-600">Select the date and time you want the changes to be applied.</p>
+          
+          {/* Date Input */} 
+          <div>
+            <label htmlFor="schedule-date" className="block text-sm font-medium text-gray-700 mb-1">Date</label>
+            <input 
+              type="date"
+              id="schedule-date"
+              value={selectedDate}
+              onChange={(e) => setSelectedDate(e.target.value)}
+              min={getTodayString()} // Prevent selecting past dates
+              className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+              required
+            />
+          </div>
+
+          {/* Time Input */} 
+          <div>
+             <label className="block text-sm font-medium text-gray-700 mb-1">Time (Hour : Minute)</label>
+             <div className="flex items-center space-x-2">
+                {/* Hour Select */}
+                <select
+                    id="schedule-hour"
+                    value={selectedHour}
+                    onChange={(e) => setSelectedHour(e.target.value)}
+                    className="flex-1 px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm bg-white appearance-none"
+                >
+                    {hourOptions.map(hour => (
+                        <option key={hour} value={hour}>{hour}</option>
+                    ))}
+                </select>
+                <span className="text-gray-500 font-semibold">:</span>
+                {/* Minute Select */}
+                <select
+                    id="schedule-minute"
+                    value={selectedMinute}
+                    onChange={(e) => setSelectedMinute(e.target.value)}
+                    className="flex-1 px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm bg-white appearance-none"
+                 >
+                     {minuteOptions.map(minute => (
+                         <option key={minute} value={minute}>{minute}</option>
+                     ))}
+                 </select>
+             </div>
+          </div>
+
+          {/* Error Message */}
+          {error && <p className="text-sm text-red-600">{error}</p>}
+        </div>
+
+        {/* Modal Footer */} 
+        <div className="flex justify-end items-center p-4 border-t border-gray-200 bg-gray-50 rounded-b-lg space-x-3">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 bg-white border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleConfirm}
+            className="px-4 py-2 bg-indigo-600 border border-transparent rounded-md shadow-sm text-sm font-medium text-white hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+          >
+            Confirm Schedule
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+</file>
+
+<file path="src/components/Sidebar.tsx">
+import React from 'react';
+import { Search, Menu } from 'lucide-react';
+export const Sidebar = () => {
+  return <div className="w-64 bg-[#2c1b3b] text-white min-h-screen">
+      <div className="p-4 flex items-center justify-between border-b border-gray-700">
+        <div className="text-2xl font-bold">⋮⋮⋮</div>
+        <div className="relative">
+          <Search className="absolute left-2 top-1/2 transform -translate-y-1/2 text-gray-400 h-4 w-4" />
+          <input type="text" placeholder="Search for people or apps..." className="pl-8 pr-2 py-1 bg-gray-700 rounded text-sm w-48" />
+        </div>
+      </div>
+      <div className="p-4 border-b border-gray-700">
+        <div className="flex items-center space-x-2 py-2">
+          <Menu className="h-5 w-5" />
+          <span className="font-medium">Upload changes</span>
+        </div>
+      </div>
+    </div>;
+};
+</file>
+
+<file path="src/components/UserList.tsx">
+import React, { useState } from 'react';
+const users = [{
+  id: 135,
+  name: 'Giuseppe Bashirian',
+  initials: 'GB',
+  color: 'bg-blue-500'
+}, {
+  id: 136,
+  name: 'Aydin Donnelly',
+  initials: 'AD',
+  color: 'bg-indigo-500'
+}, {
+  id: 246,
+  name: 'Mary Moo',
+  initials: 'MM',
+  color: 'bg-teal-500'
+}, {
+  id: 302,
+  name: 'Lauren Sanchez',
+  initials: 'LS',
+  color: 'bg-teal-500'
+}, {
+  id: 285,
+  name: 'Isabel Reichert',
+  initials: 'IR',
+  color: 'bg-gray-500'
+}, {
+  id: 304,
+  name: 'Jim Cricket',
+  initials: 'JC',
+  color: 'bg-red-500'
+}, {
+  id: 300,
+  name: 'Laura Keller',
+  initials: 'LK',
+  color: 'bg-red-500'
+}, {
+  id: 18,
+  name: 'Lue Cormier',
+  initials: 'LC',
+  color: 'bg-indigo-500'
+}, {
+  id: 19,
+  name: 'Lorie Mraz',
+  initials: 'LM',
+  color: 'bg-indigo-500'
+}];
+export const UserList = ({
+  onSelectionChange
+}) => {
+  const [selectedUsers, setSelectedUsers] = useState([]);
+  const handleSelectUser = userId => {
+    const newSelected = selectedUsers.includes(userId) ? selectedUsers.filter(id => id !== userId) : [...selectedUsers, userId];
+    setSelectedUsers(newSelected);
+    onSelectionChange(newSelected);
+  };
+  return <div className="border border-gray-200 rounded-lg overflow-hidden">
+      <table className="w-full">
+        <thead>
+          <tr className="bg-gray-50 border-b border-gray-200">
+            <th className="w-10 p-4">
+              <input type="checkbox" className="rounded border-gray-300" />
+            </th>
+            <th className="text-left p-4 font-medium text-gray-600">People</th>
+            <th className="text-left p-4 font-medium text-gray-600">
+              Rippling profile ID
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {users.map(user => <tr key={user.id} className="border-b border-gray-200 hover:bg-gray-50">
+              <td className="p-4">
+                <input type="checkbox" checked={selectedUsers.includes(user.id)} onChange={() => handleSelectUser(user.id)} className="rounded border-gray-300" />
+              </td>
+              <td className="p-4 flex items-center">
+                <div className={`w-8 h-8 rounded-full ${user.color} flex items-center justify-center text-white font-medium mr-3`}>
+                  {user.initials}
+                </div>
+                <span>{user.name}</span>
+              </td>
+              <td className="p-4 text-gray-600">{user.id}</td>
+            </tr>)}
+        </tbody>
+      </table>
+    </div>;
+};
+</file>
+
+<file path="src/config/attributes.ts">
+// src/config/attributes.ts
+
+// Define the structure for an attribute
+export interface Attribute {
+  id: string;
+  label: string;
+}
+
+// Common Attributes based on Supabase Schema
+export const sharedAvailableAttributes: Attribute[] = [
+  { id: 'full_name', label: 'Full Name' },
+  { id: 'preferred_name', label: 'Preferred Name' },
+  { id: 'work_email', label: 'Work Email' },
+  // { id: 'personal_email', label: 'Personal Email' },
+  // { id: 'phone_number', label: 'Phone' }, 
+  { id: 'employee_id', label: 'Employee ID' }, // Added based on schema
+  { id: 'job_title', label: 'Job Title' },
+  { id: 'department', label: 'Department' },
+  { id: 'team', label: 'Team' },
+  { id: 'manager_id', label: 'Manager ID' },
+  { id: 'job_level', label: 'Job Level' },
+  { id: 'employment_type', label: 'Employment Type' }, // Enum: FTE, Contractor, Intern
+  { id: 'work_location', label: 'Work Location' },
+  { id: 'work_country', label: 'Work Country' },
+  { id: 'time_zone', label: 'Time Zone' },
+  { id: 'legal_entity', label: 'Legal Entity' },
+  // { id: 'start_date', label: 'Start Date' }, // Example if added
+  { id: 'compensation_effective_date', label: 'Comp Effective Date' }, // Date type
+  { id: 'base_salary', label: 'Base Salary' }, // Numeric
+  { id: 'compensation_currency', label: 'Currency' },
+  { id: 'equity_shares', label: 'Equity Shares' }, // Integer
+  { id: 'target_annual_bonus_percentage', label: 'Target Bonus %' }, // Numeric
+  { id: 'on_target_earnings', label: 'OTE' }, // Numeric
+  // Add other relevant attributes from your 'employees' table here
+];
+
+// Helper to get label from ID - can also live here
+export const getAttributeLabel = (id: string): string => {
+  const attr = sharedAvailableAttributes.find(a => a.id === id);
+  // Simple fallback for custom fields or if lookup fails
+  return attr ? attr.label : id.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+};
+</file>
+
+<file path="src/lib/utils.ts">
+import { clsx, type ClassValue } from "clsx";
+import { twMerge } from "tailwind-merge";
+export function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs));
+}
+</file>
+
+<file path="src/utils/supabase/client.ts">
+import { createClient as createSupabaseClient } from "@supabase/supabase-js";
+
+// Use Next.js convention for public environment variables
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+if (!supabaseUrl || !supabaseAnonKey) {
+  // Provide a more helpful error message for server vs. client
+  if (typeof window === 'undefined') {
+    console.error("Supabase URL and Anon Key are not defined. Ensure NEXT_PUBLIC_ variables are set and accessible during build or server-side execution.");
+  } else {
+    console.error("Supabase URL and Anon Key are not defined. Ensure NEXT_PUBLIC_ variables are set in your .env file and the Next.js server is restarted.");
+  }
+  // Throwing an error might be too harsh, especially on the client. 
+  // Consider returning a null client or a mocked client instead, depending on requirements.
+  // For now, we keep the error throwing behavior.
+  throw new Error("Supabase client cannot be initialized. Missing environment variables.");
+}
+
+export const supabase = createSupabaseClient(supabaseUrl, supabaseAnonKey);
+
+// Optional: Export a function to create a client if needed elsewhere,
+// but usually exporting the singleton instance `supabase` is sufficient.
+// export const createClient = () => createSupabaseClient(supabaseUrl, supabaseAnonKey);
+</file>
+
+<file path="src/index.css">
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 222.2 47.4% 11.2%;
+
+    --muted: 210 40% 96.1%;
+    --muted-foreground: 215.4 16.3% 46.9%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222.2 47.4% 11.2%;
+
+    --border: 214.3 31.8% 91.4%;
+    --input: 214.3 31.8% 91.4%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222.2 47.4% 11.2%;
+
+    --primary: 222.2 47.4% 11.2%;
+    --primary-foreground: 210 40% 98%;
+
+    --secondary: 210 40% 96.1%;
+    --secondary-foreground: 222.2 47.4% 11.2%;
+
+    --accent: 210 40% 96.1%;
+    --accent-foreground: 222.2 47.4% 11.2%;
+
+    --destructive: 0 100% 50%;
+    --destructive-foreground: 210 40% 98%;
+
+    --ring: 215 20.2% 65.1%;
+
+    --radius: 0.5rem;
+  }
+
+  :root[class~="dark"] {
+    --background: 224 71% 4%;
+    --foreground: 213 31% 91%;
+
+    --muted: 223 47% 11%;
+    --muted-foreground: 215.4 16.3% 56.9%;
+
+    --accent: 216 34% 17%;
+    --accent-foreground: 210 40% 98%;
+
+    --popover: 224 71% 4%;
+    --popover-foreground: 215 20.2% 65.1%;
+
+    --border: 216 34% 17%;
+    --input: 216 34% 17%;
+
+    --card: 224 71% 4%;
+    --card-foreground: 213 31% 91%;
+
+    --primary: 210 40% 98%;
+    --primary-foreground: 222.2 47.4% 1.2%;
+
+    --secondary: 222.2 47.4% 11.2%;
+    --secondary-foreground: 210 40% 98%;
+
+    --destructive: 0 63% 31%;
+    --destructive-foreground: 210 40% 98%;
+
+    --ring: 216 34% 17%;
+
+    --radius: 0.5rem;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+}
+</file>
+
+<file path=".cursorrules">
+I. General Principles
+Language & Framework: Use TypeScript (.ts/.tsx) and React with Next.js (App Router).
+Components: Exclusively use functional components with React Hooks. Avoid class components.
+Styling: Prioritize Tailwind CSS utility classes. Minimize custom CSS. Ensure consistency with existing Tailwind usage.
+Code Style: Maintain consistency with the existing codebase formatting and naming conventions. Adhere to ESLint rules (.eslintrc.cjs).
+Modularity: Keep components focused, small, and reusable where appropriate.
+
+II. Project Structure (Next.js App Router)
+App Directory: Place primary UI routes, layouts, and pages within the app/ directory (e.g., app/layout.tsx, app/page.tsx, app/dashboard/page.tsx).
+Source Directory: Place reusable components, utility functions, library code, and Supabase client setup within the src/ directory.
+UI Components: src/components/ (e.g., src/components/Button.tsx)
+Utilities: src/lib/ or src/utils/
+Supabase Client: src/utils/supabase/client.ts (or server client if needed later)
+API Routes: Use Route Handlers within the app/api/ directory (e.g., app/api/users/route.ts).
+Imports: Use the configured path alias @/* for imports from the src/ directory (e.g., import { Button } from '@/components/Button';). Use relative paths for imports within the same module scope (e.g., within src/components/).
+
+III. Tailwind CSS Usage
+Utility-First: Use Tailwind utility classes directly in JSX whenever possible.
+Custom CSS: Avoid custom CSS files unless absolutely necessary for complex styles not achievable with Tailwind. If needed, integrate properly via src/index.css or component-specific CSS Modules.
+Configuration: Extend or customize themes, colors, fonts, etc., only through tailwind.config.js.
+Responsiveness: Use Tailwind's responsive prefixes (sm:, md:, lg:, xl:, 2xl:) for adaptive layouts.
+Validation: Ensure all generated Tailwind class names are valid and exist in the configuration. Avoid typos.
+
+IV. React & Next.js Best Practices
+Component Types: Clearly distinguish between Server Components (default in app/) and Client Components ('use client'; directive). Fetch data directly in Server Components where possible. Use Client Components for interactivity, state (useState), effects (useEffect), and browser APIs.
+State Management: Use useState for local component state. For more complex or shared state, consider React Context or a dedicated state management library if the need arises (evaluate carefully).
+Side Effects: Use useEffect in Client Components for side effects (data fetching after mount, subscriptions, manual DOM manipulation if unavoidable). Include proper dependency arrays.
+Keys: Always provide a unique and stable key prop when rendering lists of elements.
+Props: Define clear Props types/interfaces for components using TypeScript. Use default props where sensible.
+Performance: Apply React.memo, useCallback, and useMemo judiciously to optimize performance, especially for components that re-render frequently or handle expensive computations. Consider virtualization for very large lists.
+Data Fetching (App Router):
+Server Components: Fetch data directly within the component using async/await. Use the Supabase server client if needed for elevated privileges (requires setup).
+Client Components: Fetch data within useEffect using the Supabase client, typically triggered on mount or by user interaction. Handle loading and error states.
+Route Handlers (app/api/): Use for dedicated API endpoints, often interacting with Supabase using a server client.
+
+V. Supabase Integration
+Client Usage: Import and use the shared Supabase client instance from src/utils/supabase/client.ts for client-side interactions. If server-side operations with elevated privileges are needed, set up and use a Supabase server client appropriately (e.g., in Route Handlers or Server Actions).
+Environment Variables:
+Access Supabase URL and Anon Key using process.env.NEXT_PUBLIC_SUPABASE_URL and process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY for the client-side client.
+Use non-prefixed variables (e.g., process.env.SUPABASE_SERVICE_ROLE_KEY) for server-side clients (if used) and ensure they are not prefixed with NEXT_PUBLIC_ to avoid exposing them to the browser.
+Queries & Mutations:
+Use the Supabase JavaScript client library methods (supabase.from(...).select(), .insert(), .update(), .delete(), .rpc()) for database operations.
+Always check for errors returned by Supabase calls (e.g., const { data, error } = await supabase...; if (error) { ... }).
+Row Level Security (RLS):
+Assume RLS is Enabled: Code should operate under the assumption that RLS is active on all relevant tables (like employees).
+Policy Definition: Define necessary RLS policies directly in the Supabase Dashboard (Authentication -> Policies) or via SQL scripts. Policies should be as restrictive as possible while allowing required functionality.
+Prototype Policies: For this prototype, use clearly defined, potentially permissive policies (e.g., Allow authenticated users to UPDATE employees USING (true)) but ensure they are documented as prototype-specific.
+Authentication: Utilize Supabase Auth helpers (supabase.auth.signInWithPassword, supabase.auth.onAuthStateChange, supabase.auth.getUser, etc.) for user management if login is implemented.
+
+VI. Testing and Verification (During Development)
+Supabase Dashboard (MCP):
+Schema: After migrations or table modifications, verify the changes in the Table Editor section.
+Data: After running inserts/updates/deletes via the UI/API, verify the data changes directly in the Table Editor. Check for expected values, nulls, and constraints.
+RLS: Double-check that the intended RLS Policies are active and correctly configured under Authentication -> Policies for the relevant tables.
+Auth Users: If using Auth, check user creation and status under Authentication -> Users.
+Browser Developer Tools (e.g., Brave DevTools):
+Network Tab: Inspect network requests made to Supabase. Verify the correct endpoints are called, check request payloads, and examine response data and status codes (e.g., 200 OK, 401 Unauthorized, 403 Forbidden due to RLS, 5xx Server Error).
+Console Tab: Check for any application errors, warnings, Supabase client errors (console.error), or custom console.log statements used for debugging.
+React DevTools (Extension): Inspect component hierarchy, props, and state to understand component behavior and data flow during interactions.
+UI Testing: Manually test the UI flows:
+Does the data load correctly?
+Do buttons and forms behave as expected?
+Are loading and error states handled gracefully?
+Is the UI responsive across different screen sizes (if applicable)?
+Specifically for Bulk Edit: Test selecting/deselecting users, attribute selection, inputting new values, previewing changes, and confirming/canceling.
+
+VII. Error Handling & Code Quality
+Graceful Errors: Implement user-friendly error handling. Display informative messages instead of crashing or showing raw errors.
+Supabase Errors: Explicitly handle potential errors returned from Supabase client operations. Log detailed errors to the console during development.
+React Errors: Address common React issues: missing keys, invalid hook usage, unhandled promises in useEffect.
+Linting/Formatting: Ensure code passes ESLint and Prettier checks (if configured). Run linting commands periodically.
+</file>
+
+<file path=".eslintrc.cjs">
+module.exports = {
+  root: true,
+  env: { browser: true, es2020: true },
+  extends: [
+    'eslint:recommended',
+    'plugin:@typescript-eslint/recommended',
+    'plugin:react-hooks/recommended',
+  ],
+  ignorePatterns: ['dist', '.eslintrc.cjs'],
+  parser: '@typescript-eslint/parser',
+  plugins: ['react-refresh'],
+  rules: {
+    'react-refresh/only-export-components': [
+      'warn',
+      { allowConstantExport: true },
+    ],
+  },
+}
+</file>
+
+<file path=".gitignore">
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Environment variables
+.env*
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Next.js specific
+.next/
+out/
+
+# Turborepo
+.turbo
+
+# Cursor
+.cursor/
+</file>
+
+<file path="next-env.d.ts">
+/// <reference types="next" />
+/// <reference types="next/image-types/global" />
+
+// NOTE: This file should not be edited
+// see https://nextjs.org/docs/basic-features/typescript for more information.
+</file>
+
+<file path="package.json">
+{
+  "name": "magic-patterns-nextjs-template",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.44.4",
+    "clsx": "latest",
+    "lucide-react": "^0.441.0",
+    "next": "14.2.5",
+    "react": "^18",
+    "react-dom": "^18",
+    "tailwind-merge": "latest"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/react": "^18",
+    "@types/react-dom": "^18",
+    "eslint": "^8",
+    "eslint-config-next": "14.2.5",
+    "postcss": "^8",
+    "tailwindcss": "^3.4.1",
+    "autoprefixer": "^10.4.19",
+    "typescript": "^5"
+  }
+}
+</file>
+
+<file path="postcss.config.js">
+export default {
+  plugins: {
+    tailwindcss: {},
+    autoprefixer: {},
+  },
+}
+</file>
+
+<file path="README.md">
+# Magic Patterns - Vite Template
+
+This code was generated by [Magic Patterns](https://magicpatterns.com) for this design: [Source Design](https://magicpatterns.com/c/dqlxww95urlfymgjihuaww)
+
+## Getting Started
+
+1. Run `npm install`
+2. Run `npm run dev`
+</file>
+
+<file path="tailwind.config.js">
+module.exports = {
+  content: [
+    './app/**/*.{js,ts,jsx,tsx,mdx}',
+    './pages/**/*.{js,ts,jsx,tsx,mdx}',
+    './src/**/*.{js,ts,jsx,tsx,mdx}'
+  ],
+  darkMode: "selector",
+  theme: {
+    container: {
+      center: true,
+      padding: "2rem",
+      screens: {
+        "2xl": "1400px",
+      },
+    },
+    extend: {
+      colors: {
+        border: "hsl(var(--border))",
+        input: "hsl(var(--input))",
+        ring: "hsl(var(--ring))",
+        background: "hsl(var(--background))",
+        foreground: "hsl(var(--foreground))",
+        primary: {
+          DEFAULT: "hsl(var(--primary))",
+          foreground: "hsl(var(--primary-foreground))",
+        },
+        secondary: {
+          DEFAULT: "hsl(var(--secondary))",
+          foreground: "hsl(var(--secondary-foreground))",
+        },
+        destructive: {
+          DEFAULT: "hsl(var(--destructive))",
+          foreground: "hsl(var(--destructive-foreground))",
+        },
+        muted: {
+          DEFAULT: "hsl(var(--muted))",
+          foreground: "hsl(var(--muted-foreground))",
+        },
+        accent: {
+          DEFAULT: "hsl(var(--accent))",
+          foreground: "hsl(var(--accent-foreground))",
+        },
+        popover: {
+          DEFAULT: "hsl(var(--popover))",
+          foreground: "hsl(var(--popover-foreground))",
+        },
+        card: {
+          DEFAULT: "hsl(var(--card))",
+          foreground: "hsl(var(--card-foreground))",
+        },
+      },
+      borderRadius: {
+        lg: "var(--radius)",
+        md: "calc(var(--radius) - 2px)",
+        sm: "calc(var(--radius) - 4px)",
+      },
+      keyframes: {
+        "caret-blink": {
+          "0%,70%,100%": { opacity: "1" },
+          "20%,50%": { opacity: "0" },
+        },
+        "accordion-down": {
+          from: { height: 0 },
+          to: { height: "var(--radix-accordion-content-height)" },
+        },
+        "accordion-up": {
+          from: { height: "var(--radix-accordion-content-height)" },
+          to: { height: 0 },
+        },
+      },
+      animation: {
+        "accordion-down": "accordion-down 0.2s ease-out",
+        "accordion-up": "accordion-up 0.2s ease-out",
+        "caret-blink": "caret-blink 1.25s ease-out infinite",
+      },
+    },
+  },
+}
+</file>
+
+<file path="tsconfig.json">
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "useDefineForClassFields": true,
+    "lib": [
+      "DOM",
+      "DOM.Iterable",
+      "ESNext"
+    ],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    /* Bundler mode */
+    "moduleResolution": "bundler",
+    "allowJs": true,
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "preserve",
+    /* Linting */
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "incremental": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "paths": {
+      "@/*": [
+        "./src/*"
+      ]
+    },
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ]
+  },
+  "include": [
+    "next-env.d.ts",
+    "**/*.ts",
+    "**/*.tsx",
+    ".next/types/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules"
+  ]
+}
+</file>
+
+</files>
